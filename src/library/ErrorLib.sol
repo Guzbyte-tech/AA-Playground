@@ -7,4 +7,5 @@ library ErrorLib {
     error NotOwnerOrEntryPoint();
     error NotEntryPoint();
     error WrongArrayLengths();
+    error InvalidAddress();
 }

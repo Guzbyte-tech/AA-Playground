@@ -5,6 +5,7 @@ import {SmartUserAccount} from "./SmartUserAccount.sol";
 import { IEntryPoint } from"lib/account-abstraction/contracts/interfaces/IEntryPoint.sol";
 import { ERC1967Proxy } from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import { Create2 } from "@openzeppelin/contracts/utils/Create2.sol";
+import { ErrorLib } from "./library/ErrorLib.sol";
 
 contract AccountFactory {
     SmartUserAccount public immutable ACCOUNT_IMPLEMENTATION;
@@ -22,6 +23,8 @@ contract AccountFactory {
      * This method returns an existing account address so that entryPoint.getSenderAddress() would work even after account creation
     */
     function createAccount(address owner, uint256 salt) public returns (SmartUserAccount ret) {
+        if (owner == address(0)) revert ErrorLib.InvalidAddress();
+
         address addr = getAddress(owner, salt);
         uint256 codeSize = addr.code.length;
         if (codeSize > 0) {
@@ -41,7 +44,7 @@ contract AccountFactory {
 
     /**
      * @notice Calculate the counterfactual address of this account as it would be returned by createAccount()
-     */
+    */
     function getAddress(address owner, uint256 salt) public view returns (address) {
         return Create2.computeAddress(
             bytes32(salt),
