@@ -2,7 +2,7 @@
 pragma solidity ^0.8.28;
 
 import {SmartUserAccount} from "./SmartUserAccount.sol";
-import { IEntryPoint } from"lib/account-abstraction/contracts/interfaces/IEntryPoint.sol";
+import { IEntryPoint } from "@account-abstraction/interfaces/IEntryPoint.sol";
 import { ERC1967Proxy } from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import { Create2 } from "@openzeppelin/contracts/utils/Create2.sol";
 import { ErrorLib } from "./library/ErrorLib.sol";

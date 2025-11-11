@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import { BaseAccount } from"lib/account-abstraction/contracts/core/BaseAccount.sol";
-import { IEntryPoint } from"lib/account-abstraction/contracts/interfaces/IEntryPoint.sol";
-import { PackedUserOperation } from"lib/account-abstraction/contracts/interfaces/PackedUserOperation.sol";
+import { BaseAccount } from "@account-abstraction/core/BaseAccount.sol";
+import { IEntryPoint } from "@account-abstraction/interfaces/IEntryPoint.sol";
+import { PackedUserOperation } from "@account-abstraction/interfaces/PackedUserOperation.sol";
 import { ErrorLib } from "./library/ErrorLib.sol";
 import { ECDSA } from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import { MessageHashUtils } from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
-import { SIG_VALIDATION_FAILED, SIG_VALIDATION_SUCCESS } from "lib/account-abstraction/contracts/core/Helpers.sol";
+import { SIG_VALIDATION_FAILED, SIG_VALIDATION_SUCCESS } from "@account-abstraction/core/Helpers.sol";
 
 /**
  * @title SmartUserAccount
@@ -40,7 +40,7 @@ contract SmartUserAccountNoUpgrade is BaseAccount{
         return ENTRY_POINT;
     }
 
-    function execute(address dest, uint256 value, bytes calldata data) external override {
+    function execute(address dest, uint256 value, bytes calldata data) external {
         _requireFromEntryPointOrOwner();
         _call(dest, value, data);
     }

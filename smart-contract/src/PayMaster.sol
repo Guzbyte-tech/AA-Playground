@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import { BasePaymaster } from "lib/account-abstraction/contracts/core/BasePaymaster.sol";
+import { BasePaymaster } from "@account-abstraction/core/BasePaymaster.sol";
 import { ECDSA } from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import { MessageHashUtils } from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
-import { IEntryPoint } from"lib/account-abstraction/contracts/interfaces/IEntryPoint.sol";
-import { UserOperationLib, PackedUserOperation } from "lib/account-abstraction/contracts/core/UserOperationLib.sol";
+import { IEntryPoint } from "@account-abstraction/interfaces/IEntryPoint.sol";
+import { UserOperationLib, PackedUserOperation } from "@account-abstraction/core/UserOperationLib.sol";
 
 
 

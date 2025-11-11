@@ -1,0 +1,52 @@
+services:
+  backend:
+    container_name: erc4337-backend
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "4000:4000"
+    env_file: .env.docker
+    depends_on:
+      - db
+      - redis
+    volumes:
+      - .:/app
+      - /app/node_modules
+  db:
+    container_name: erc4337-db
+    image: postgres:15-alpine
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: 1234
+      POSTGRES_DB: erc4337
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+  redis:
+    image: redis:7
+    container_name: erc4337-redis-server
+    ports:
+      - '6379:6379'
+    restart: always
+    volumes:
+      - redisdata:/data
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: erc4337-pgadmin
+    restart: always
+    ports:
+      - "5050:80"  # Host:Container (access via localhost:5050)
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@local.com
+      PGADMIN_DEFAULT_PASSWORD: admin123
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    depends_on:
+      - db
+volumes:
+  pgdata:
+  redisdata:
+  pgadmin_data:
