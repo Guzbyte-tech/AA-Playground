@@ -25,10 +25,16 @@ export class User {
   @Column({ unique: true, name: "smart_account_address" })
   smartAccountAddress!: string;
 
+  @Column({ unique: true, name: "owner_address" })
+  ownerAddress!: string;
+
   // IMPORTANT: Backend does NOT store device private key!
   // Only stores encrypted recovery data
   @Column({ type: "text", name: "encrypted_recovery_data" })
   encryptedRecoveryData!: string;
+
+  @Column({ name: "deployment_salt", unique: true })
+  salt!: string;
 
   @Column({ name: "decrypting_key" })
   decryptingKey!: string;

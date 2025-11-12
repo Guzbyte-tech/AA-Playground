@@ -4,6 +4,7 @@ import { Transaction, TxStatus } from '../entities/Transaction';
 import { AAService } from '../services/AAService';
 import { AuthRequest } from '../middlewares/auth.middleware';
 import AppDataSource from '../config/db';
+// import { serializeUserOp } from '../utils/helpers';
 
 export class TransactionController {
     private aaService: AAService;
@@ -24,6 +25,7 @@ export class TransactionController {
         try {
             const { to, amount } = req.body;
             const user = req.user!;
+            console.log(user);
 
             console.log('Building UserOp for transfer');
             console.log('From:', user.smartAccountAddress);
@@ -33,10 +35,13 @@ export class TransactionController {
             // Build UserOp (unsigned)
             const partialUserOp = await this.aaService.buildTokenTransferUserOp(
                 user.smartAccountAddress,
+                user.ownerAddress,
                 to,
                 amount,
-                user.isAccountDeployed
+                user.isAccountDeployed,
+                user.salt
             );
+            console.log('Partial UserOp:', partialUserOp);
             res.json({
                 success: true,
                 data: {
@@ -76,6 +81,7 @@ export class TransactionController {
             }
 
             // Add paymaster signature (backend sponsors gas!)
+            // const paymasterAndData = await this.aaService.addPaymasterSignature(userOp);
             const paymasterAndData = await this.aaService.addPaymasterSignature(userOp);
             userOp.paymasterAndData = paymasterAndData;
 

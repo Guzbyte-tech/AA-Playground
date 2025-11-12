@@ -26,7 +26,7 @@ export class AuthController {
             console.log('\n New user registration');
             console.log('   Username:', username);
             console.log('   Device public key:', decryptingKey);
-            console.log('   Counterfactual address:', ownerWalletAddress);
+            console.log('   Owner address:', ownerWalletAddress);
 
             const userRepo = AppDataSource.getRepository(User);
 
@@ -62,9 +62,11 @@ export class AuthController {
                 email,
                 passwordHash,
                 smartAccountAddress,
+                ownerAddress: ownerWalletAddress,
                 encryptedRecoveryData,
                 decryptingKey,
-                isAccountDeployed: false
+                isAccountDeployed: false,
+                salt
             });
 
             await userRepo.save(user);
@@ -157,4 +159,31 @@ export class AuthController {
             });
         }
     };
+
+    /**
+     * Profile
+     */
+    profile = async (req: Request, res: Response) => {
+        try {
+            const user = (req as any).user as User;
+            res.json({
+                success: true,
+                data: {
+                    user: {
+                        id: user.id,
+                        username: user.username,
+                        email: user.email,
+                        smartAccountAddress: user.smartAccountAddress,
+                        isAccountDeployed: user.isAccountDeployed
+                    }
+                }
+            });
+        } catch (error: any) {
+            console.error('Profile error:', error);
+            res.status(500).json({
+                success: false,
+                error: 'Profile failed'
+            });
+        }
+    }
 }

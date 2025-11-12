@@ -8,13 +8,14 @@ import {
   ErrorRequestHandler,
 } from "express";
 import { TransactionController } from "../controllers/TransactionController";
+import { authMiddleware } from "../middlewares/auth.middleware";
 
 const transactionController = new TransactionController();
 const router = Router();
 
-router.post("/build", transactionController.buildUserOp);
-router.post("/submit", transactionController.submitTransaction);
-router.post("/status", transactionController.getTransactionStatus);
+router.post("/build", authMiddleware, transactionController.buildUserOp);
+router.post("/submit", authMiddleware, transactionController.submitTransaction);
+router.post("/status", authMiddleware, transactionController.getTransactionStatus);
 
 
 export default router;

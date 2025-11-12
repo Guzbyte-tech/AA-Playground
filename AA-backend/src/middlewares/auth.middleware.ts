@@ -26,16 +26,15 @@ export const authMiddleware = async (
     }
 
     const secret = process.env.JWT_SECRET!;
-    const decoded = jwt.verify(token, secret) as { id: string | number };
+    const decoded = jwt.verify(token, secret) as { userId: string | number };
 
     const userRepo = AppDataSource.getRepository(User);
-    const user = await userRepo.findOne({ where: { id: String(decoded.id) } });
+    const user = await userRepo.findOne({ where: { id: String(decoded.userId) } });
 
     if (!user) {
       return res.status(401).json({ success: false, message: 'User not found' });
     }
 
-    // Attach user to request for downstream handlers
     req.user = user;
 
     next();

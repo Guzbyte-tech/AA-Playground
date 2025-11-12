@@ -1,7 +1,7 @@
 import { ethers } from 'ethers';
 import axios from 'axios';
 
-export interface UserOperation {
+export interface UserOperationV6 {
     sender: string;
     nonce: string;
     initCode: string;
@@ -14,6 +14,22 @@ export interface UserOperation {
     paymasterAndData: string;
     signature: string;
 }
+
+export interface UserOperation {
+    sender: string;
+    nonce: string;
+    initCode: string;
+    callData: string;
+
+    // Packed fields (bytes32)
+    accountGasLimits: string; // = (verificationGasLimit << 128) | callGasLimit
+    preVerificationGas: string;
+    gasFees: string; // = (maxPriorityFeePerGas << 128) | maxFeePerGas
+
+    paymasterAndData: string;
+    signature: string;
+}
+
 
 export class BundlerService {
     private bundlerUrl: string;
@@ -117,7 +133,7 @@ export class BundlerService {
     /**
      * Estimate UserOperation gas
      */
-    async estimateUserOperationGas(userOp: UserOperation): Promise<{
+    async estimateUserOperationGas(userOp: any): Promise<{
         preVerificationGas: string;
         verificationGasLimit: string;
         callGasLimit: string;
@@ -127,9 +143,9 @@ export class BundlerService {
                 this.bundlerUrl,
                 {
                     jsonrpc: '2.0',
-                    id: 1,
                     method: 'eth_estimateUserOperationGas',
-                    params: [userOp, this.entryPoint]
+                    params: [userOp, this.entryPoint],
+                    id: 1,
                 },
                 {
                     headers: {
@@ -141,10 +157,76 @@ export class BundlerService {
             if ((response.data as any).error) {
                 throw new Error(`Gas estimation failed: ${(response.data as any).error.message}`);
             }
-
+            console.log((response.data as any).result);
             return (response.data as any).result;
         } catch (error: any) {
             console.error('Gas estimation error:', error.response?.data || error.message);
+            throw error;
+        }
+    }
+
+    async getMaxPriorityFeePerGas(): Promise<{
+        maxPriorityFeePerGas: string;
+    }> {
+        try {
+            const response = await axios.post(
+                this.bundlerUrl,
+                {
+                    jsonrpc: '2.0',
+                    method: 'rundler_maxPriorityFeePerGas',
+                    params: [],
+                    id: 1,
+                },
+                {
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                }
+            );
+
+            if ((response.data as any).error) {
+                throw new Error(`maxPriorityFeePerGas failed: ${(response.data as any).error.message}`);
+            }
+            console.log((response.data as any).result);
+            // return (response.data as any).result;
+            return {
+                maxPriorityFeePerGas: (response.data as any).result
+            }
+        } catch (error: any) {
+            console.error('maxPriorityFeePerGas error:', error.response?.data || error.message);
+            throw error;
+        }
+    }
+
+     async getMaxPriorityFeePerGas_v2(): Promise<{
+        maxPriorityFeePerGas: bigint;
+    }> {
+        try {
+            const response = await axios.post(
+                this.bundlerUrl,
+                {
+                    jsonrpc: '2.0',
+                    method: 'rundler_maxPriorityFeePerGas',
+                    params: [],
+                    id: 1,
+                },
+                {
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                }
+            );
+
+            if ((response.data as any).error) {
+                throw new Error(`maxPriorityFeePerGas failed: ${(response.data as any).error.message}`);
+            }
+            console.log((response.data as any).result);
+            // return (response.data as any).result;
+            return {
+                maxPriorityFeePerGas: (response.data as any).result
+            }
+        } catch (error: any) {
+            console.error('maxPriorityFeePerGas error:', error.response?.data || error.message);
             throw error;
         }
     }
@@ -156,12 +238,12 @@ export class BundlerService {
         maxFeePerGas: string;
         maxPriorityFeePerGas: string;
     }> {
-        const provider = new ethers.JsonRpcProvider(process.env.RPC_URL);
+        const provider = new ethers.JsonRpcProvider(process.env.SEPOLIA_RPC_URL);
         const feeData = await provider.getFeeData();
 
         return {
-            maxFeePerGas: feeData.maxFeePerGas?.toString() || '0x0',
-            maxPriorityFeePerGas: feeData.maxPriorityFeePerGas?.toString() || '0x0'
+            maxFeePerGas: '0x' + feeData.maxFeePerGas?.toString(16) || '0x0',
+            maxPriorityFeePerGas: '0x' + feeData.maxPriorityFeePerGas?.toString(16) || '0x0'
         };
     }
 }
