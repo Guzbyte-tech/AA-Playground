@@ -36,9 +36,6 @@ export class User {
   @Column({ default: false, name: "is_account_deployed" })
   isAccountDeployed!: boolean;
 
-  @Column({ type: "string" })
-  salt!: string;
-
   @CreateDateColumn()
   createdAt!: Date;
 

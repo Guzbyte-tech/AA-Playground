@@ -64,8 +64,7 @@ export class AuthController {
                 smartAccountAddress,
                 encryptedRecoveryData,
                 decryptingKey,
-                isAccountDeployed: false,
-                salt
+                isAccountDeployed: false
             });
 
             await userRepo.save(user);
