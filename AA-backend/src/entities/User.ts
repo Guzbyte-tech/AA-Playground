@@ -8,52 +8,36 @@ import {
   Unique,
 } from "typeorm";
 
-export enum UserRole {
-  LISTENER = "listener",
-  ARTIST = "artist",
-  ADMIN = "admin",
-}
-
 @Entity("users")
-@Unique(["walletAddress", "email", "username"])
 export class User {
   @PrimaryGeneratedColumn("uuid")
   id!: string;
 
-  @Column({ nullable: true })
-  profileImage?: string;
+  @Column({ unique: true })
+  username!: string;
 
-  @Column({
-    type: "enum",
-    enum: UserRole,
-    default: UserRole.LISTENER,
-  })
-  role!: UserRole;
+  @Column({ unique: true })
+  email!: string;
 
-  @Column()
-  walletAddress!: string;
+  @Column({ name: "password_hash" })
+  passwordHash!: string;
 
-  @Column({ unique: true, nullable: true })
-  username?: string;
+  @Column({ unique: true, name: "smart_account_address" })
+  smartAccountAddress!: string;
 
-  @Column({ unique: true, nullable: true })
-  name?: string;
+  // IMPORTANT: Backend does NOT store device private key!
+  // Only stores encrypted recovery data
+  @Column({ type: "text", name: "encrypted_recovery_data" })
+  encryptedRecoveryData!: string;
 
-  @Column({ unique: true, nullable: true })
-  @IsEmail()
-  email?: string;
+  @Column({ name: "decrypting_key" })
+  decryptingKey!: string;
 
-  @Column("float", { default: 0 })
-  rewardPoints!: number;
+  @Column({ default: false, name: "is_account_deployed" })
+  isAccountDeployed!: boolean;
 
-  @Column("int", { default: 0 })
-  totalStreams!: number;
-
-  @Column("int", { default: 0 })
-  totalStreamTime!: number;
-
-  @Column("int", { default: 0 })
-  uniqueListeners!: number;
+  @Column({ type: "string" })
+  salt!: string;
 
   @CreateDateColumn()
   createdAt!: Date;

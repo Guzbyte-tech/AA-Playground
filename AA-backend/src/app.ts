@@ -9,6 +9,7 @@ import morgan from "morgan";
 import cors from "cors";
 import redis from "./config/redis";
 import authRoutes from "./routes/authRoutes";
+import transactionRoutes from "./routes/transactionRoutes";
 
 // Route imports
 
@@ -61,6 +62,7 @@ app.use("/health", (req, res) => {
 });
 
 app.use("/api/auth", authRoutes);
+app.use("/api/transaction", transactionRoutes);
 
 app.get('/redis-test', async (req, res) => {
   await redis.set('greeting', 'hello world');

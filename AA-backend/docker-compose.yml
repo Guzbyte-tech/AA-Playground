@@ -50,3 +50,4 @@ volumes:
   pgdata:
   redisdata:
   pgadmin_data:
+  

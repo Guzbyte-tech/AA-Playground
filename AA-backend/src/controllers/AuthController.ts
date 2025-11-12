@@ -1,119 +1,161 @@
-import { plainToInstance } from 'class-transformer';
-import { CreateUserDTO } from '../dtos/CreateUserDTO';
-import { JWTDTO } from '../dtos/JWTDTO';
-import { UpdateUserDTO } from '../dtos/UpdateUserDTO';
-import { User } from '../entities/User';
-import { AuthService } from '../services/AuthService';
-import { UserService } from './../services/UserService';
 import { Request, Response } from 'express';
-import { validate } from 'class-validator';
-import { formatValidationErrors } from '../utils/helpers';
+import { User } from '../entities/User';
+import { AAService } from '../services/AAService';
+import jwt from 'jsonwebtoken';
+import AppDataSource from '../config/db';
+import bcrypt from 'bcryptjs';
 
 export class AuthController {
+    private aaService: AAService;
 
-    private userService: UserService
-    private authService: AuthService;
-    
     constructor() {
-        this.userService = new UserService();
-        this.authService = new AuthService();
+        this.aaService = new AAService();
     }
 
-    register = async(req: Request, res: Response) => {
+    async init() {
+        await this.aaService.init();
+    }
+
+    /**
+     * Register: User creates account on device, sends public key
+     */
+    register = async (req: Request, res: Response) => {
         try {
-            if (!req.body || Object.keys(req.body).length === 0) {
-                return res.status(400).json({
-                    success: false,
-                    message: "Request body is required" 
-                });
-            }
+            const { username, email, password, ownerWalletAddress, decryptingKey, salt } = req.body;
 
-            // Check for required fields before transformation
-            const requiredFields = ['role', 'walletAddress', 'signature', 'message', 'email'];
-            const missingFields = requiredFields.filter(field => !req.body[field]);
-            
-            if (missingFields.length > 0) {
-                return res.status(400).json({
-                    success: false, 
-                    message: `Missing required fields: ${missingFields.join(', ')}` 
-                });
-            }
+            console.log('\n New user registration');
+            console.log('   Username:', username);
+            console.log('   Device public key:', decryptingKey);
+            console.log('   Counterfactual address:', ownerWalletAddress);
 
-            // Transform with explicit options
-            const userData = plainToInstance(CreateUserDTO, req.body, {
-                enableImplicitConversion: true
+            const userRepo = AppDataSource.getRepository(User);
+
+            // Check existing user
+            const existing = await userRepo.findOne({
+                where: [{ username }, { email }]
             });
 
-            console.log("Transformed userData:", userData);
-
-            // Validate the transformed data
-            const errors = await validate(userData);
-            if (errors.length > 0) {
-                console.log("Validation errors:", errors);
-                const formatted = formatValidationErrors(errors);
-                return res.status(422).json(formatted);
+            if (existing) {
+                return res.status(400).json({
+                    success: false,
+                    error: 'Username or email already exists'
+                });
             }
 
-            // Create user
-            const user = await this.userService.createUser(userData);
-            res.status(201).json({success: true, message: "User created successfully", user});
-            
-        } catch (error) {
-            console.error("Register error:", error);     
-            this.handleError(res, error);
-        }
-    }
+            // Hash password
+            const passwordHash = await bcrypt.hash(password, 12);
 
+            // Create smart account (counterfactual)
+            const {
+                smartAccountAddress,
+                encryptedRecoveryData
+            } = await this.aaService.createSmartAccount(
+                username,
+                ownerWalletAddress,
+                salt,
+                decryptingKey
+            );
+
+            // Save user
+            const user = userRepo.create({
+                username,
+                email,
+                passwordHash,
+                smartAccountAddress,
+                encryptedRecoveryData,
+                decryptingKey,
+                isAccountDeployed: false,
+                salt
+            });
+
+            await userRepo.save(user);
+
+            // Generate JWT
+            const token = jwt.sign(
+                { userId: user.id },
+                process.env.JWT_SECRET!,
+                { expiresIn: '7d' }
+            );
+
+            console.log('User registered');
+            console.log('Smart Account:', smartAccountAddress);
+            console.log('Deployed:', false);
+
+            res.status(201).json({
+                success: true,
+                data: {
+                    user: {
+                        id: user.id,
+                        username: user.username,
+                        email: user.email,
+                        smartAccountAddress: user.smartAccountAddress,
+                        isAccountDeployed: user.isAccountDeployed
+                    },
+                    token
+                }
+            });
+        } catch (error: any) {
+            console.error('Registration error:', error);
+            res.status(500).json({
+                success: false,
+                error: 'Registration failed',
+                details: error.message
+            });
+        }
+    };
+
+    /**
+     * Login
+     */
     login = async (req: Request, res: Response) => {
         try {
-            if (!req.body || Object.keys(req.body).length === 0) {
-                return res.status(400).json({
+            const { username, password } = req.body;
+
+            const userRepo = AppDataSource.getRepository(User);
+            const user = await userRepo.findOne({ where: { username } });
+
+            if (!user) {
+                return res.status(401).json({
                     success: false,
-                    message: "Request body is required" 
+                    error: 'Invalid credentials'
                 });
             }
 
-             // Check for required fields before transformation
-            const requiredFields = ['role', 'walletAddress', 'signature', 'message'];
-            const missingFields = requiredFields.filter(field => !req.body[field]);
-            
-            if (missingFields.length > 0) {
-                return res.status(400).json({
-                    success: false, 
-                    message: `Missing required fields: ${missingFields.join(', ')}` 
+            // Verify password
+            const isValid = await bcrypt.compare(password, user.passwordHash);
+            if (!isValid) {
+                return res.status(401).json({
+                    success: false,
+                    error: 'Invalid credentials'
                 });
             }
-            
-            const loginData = plainToInstance(JWTDTO, req.body, {
-                enableImplicitConversion: true
+
+            // Generate JWT
+            const token = jwt.sign(
+                { userId: user.id },
+                process.env.JWT_SECRET!,
+                { expiresIn: '7d' }
+            );
+
+            res.json({
+                success: true,
+                data: {
+                    user: {
+                        id: user.id,
+                        username: user.username,
+                        email: user.email,
+                        smartAccountAddress: user.smartAccountAddress,
+                        isAccountDeployed: user.isAccountDeployed
+                    },
+                    token
+                }
             });
-
-            const errors = await validate(loginData);
-            if (errors.length > 0) {
-                console.log("Validation errors:", errors);
-                const formatted = formatValidationErrors(errors);
-                return res.status(422).json(formatted);
-            }
-            const user = await this.authService.login(loginData);
-            res.status(200).json({success: true, message: "User logged in successfully", user});
-            
-        } catch (error) {
-            console.error("Login error:", error);
-            this.handleError(res, error);
+        } catch (error: any) {
+            console.error('Login error:', error);
+            res.status(500).json({
+                success: false,
+                error: 'Login failed'
+            });
         }
-    }
-
-    private handleError(res: Response, error: unknown): void {
-        if (error instanceof Error) {
-            console.error("Handled Error:", error.message, error.stack);
-            
-            res.status(400).json({ message: error.message });
-        } else if (typeof error === 'string') {
-            console.error("String Error:", error);
-            res.status(400).json({ message: error });
-        } else {
-            console.error("Unknown Error:", error);
-            res.status(500).json({ message: "Internal server error" });
-        }
-    }
+    };
 }
