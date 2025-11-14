@@ -21,7 +21,7 @@ export class AuthController {
      */
     register = async (req: Request, res: Response) => {
         try {
-            const { username, email, password, ownerWalletAddress, decryptingKey, salt } = req.body;
+            const { username, email, password, ownerWalletAddress, decryptingKey } = req.body;
 
             console.log('\n New user registration');
             console.log('   Username:', username);
@@ -48,11 +48,12 @@ export class AuthController {
             // Create smart account (counterfactual)
             const {
                 smartAccountAddress,
-                encryptedRecoveryData
+                encryptedRecoveryData,
+                salt,
+                salt_BigInt
             } = await this.aaService.createSmartAccount(
                 username,
                 ownerWalletAddress,
-                salt,
                 decryptingKey
             );
 
@@ -66,7 +67,8 @@ export class AuthController {
                 encryptedRecoveryData,
                 decryptingKey,
                 isAccountDeployed: false,
-                salt
+                salt,
+                saltDecimal: salt_BigInt
             });
 
             await userRepo.save(user);

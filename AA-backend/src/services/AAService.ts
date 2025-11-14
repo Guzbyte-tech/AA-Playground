@@ -1,12 +1,23 @@
-import { Contract, ethers, AbiCoder, toBeHex } from "ethers";
-import { BundlerService, UserOperation } from "./BundlerService";
+import { ethers, AbiCoder, toBeHex } from "ethers";
+import {
+  BundlerService,
+  UserOperation,
+  AlchemyUserOperationV7,
+} from "./BundlerService";
 import crypto from "crypto";
-import { FactoryABI } from "../abis/FactoryAbi";
+
+import FactoryABI from "../abis/FactoryABI.json";
+
 import { EntryPointABI } from "../abis/EntryPointABI";
 import dotenv from "dotenv";
 // import {  packAccountGasLimits, packGasFees } from '../utils/helpers';
 import { max } from "class-validator";
-import { packAccountGasLimits, packGasFees } from "../utils/helpers";
+import {
+  packAccountGasLimits,
+  packGasFees,
+  predictSmartAccountAddress,
+} from "../utils/helpers";
+import { Signature } from "ethers";
 
 dotenv.config();
 
@@ -20,7 +31,7 @@ export class AAService {
   private chainId: number | undefined;
 
   constructor() {
-    this.provider = new ethers.JsonRpcProvider(process.env.SEPOLIA_RPC_URL);
+    this.provider = new ethers.JsonRpcProvider(process.env.SEPOLIA_RPC_URL!);
     this.bundler = new BundlerService();
     this.factoryAddress = process.env.FACTORY_ADDRESS!;
     this.entryPointAddress = process.env.ENTRYPOINT_ADDRESS!;
@@ -29,6 +40,7 @@ export class AAService {
       process.env.PAYMASTER_SIGNER_PRIVATE_KEY!,
       this.provider
     );
+    this.init();
   }
 
   private packAccountGasLimits(
@@ -62,27 +74,35 @@ export class AAService {
   async createSmartAccount(
     userId: string,
     ownerWalletAddress: string,
-    salt: number = 0,
     decryptingKey: string
   ): Promise<{
     smartAccountAddress: string;
     encryptedRecoveryData: string;
+    salt: any;
+    salt_BigInt: string;
   }> {
     // Calculate counterfactual address
-    const factory = new Contract(
+    const factory = new ethers.Contract(
       this.factoryAddress,
       FactoryABI,
       this.provider
     );
 
-    const smartAccountAddress = await (factory as any).getAddress(
-      ownerWalletAddress,
-      ethers.toBigInt(salt)
-    );
+    const { predictedAddress, salt, salt_BigInt } =
+      await predictSmartAccountAddress(
+        this.provider,
+        this.factoryAddress,
+        ownerWalletAddress
+      );
 
+    // const smartAccountAddress = await (factory as any).getAddress(
+    //   ownerWalletAddress,
+    //   salt
+    // );
+    const smartAccountAddress = predictedAddress;
     // Create recovery data (encrypted wallet address + salt)
     const recoveryData = JSON.stringify({
-      smartAccountAddress,
+      predictedAddress,
       decryptingKey,
       salt: salt.toString(),
       createdAt: Date.now(),
@@ -96,20 +116,183 @@ export class AAService {
     console.log("✅ Smart account created (counterfactual)");
     console.log("   Address:", smartAccountAddress);
     console.log("   Owner (device):", decryptingKey);
+    console.log("   Factory Address:", this.factoryAddress);
 
     return {
       smartAccountAddress,
       encryptedRecoveryData,
+      salt,
+      salt_BigInt,
     };
   }
 
-async buildTokenTransferUserOp(
+  async buildTokenTransferUserOpAlchemyV7(
     smartAccountAddress: string,
     ownerAddress: string,
     toAddress: string,
     amount: string,
     isDeployed: boolean,
-    salt: any
+    salt: string
+  ): Promise<Partial<UserOperation>> {
+    if (!smartAccountAddress) {
+      throw new Error("Smart account address is required");
+    }
+    console.log("Building UserOp...");
+
+    // 1. Encode token transfer
+    const tokenInterface = new ethers.Interface([
+      "function transfer(address,uint256) returns (bool)",
+    ]);
+    const transferData = tokenInterface.encodeFunctionData("transfer", [
+      toAddress,
+      ethers.parseUnits(amount, 18),
+    ]);
+
+    // 2. Encode account.execute()
+    const accountInterface = new ethers.Interface([
+      "function execute(address,uint256,bytes)",
+    ]);
+    const callData = accountInterface.encodeFunctionData("execute", [
+      process.env.UMC_TOKEN_ADDRESS!,
+      0,
+      transferData,
+    ]);
+
+    // 3. Prepare factory and factoryData (instead of initCode)
+    let factory = "0x";
+    let factoryData = "0x";
+
+    if (!isDeployed) {
+      const factoryContract = new ethers.Contract(
+        this.factoryAddress,
+        FactoryABI,
+        this.provider
+      );
+
+      const nSalt = BigInt(salt);
+      const predictedAddress = await factoryContract[
+        "getAddress(address,uint256)"
+      ](ownerAddress, nSalt);
+
+      if (
+        predictedAddress.toLowerCase() !== smartAccountAddress.toLowerCase()
+      ) {
+        throw new Error(
+          `Address mismatch! Predicted: ${predictedAddress}, Expected: ${smartAccountAddress}`
+        );
+      }
+
+      // For Alchemy v0.7: separate factory and factoryData
+      factory = this.factoryAddress;
+      factoryData = factoryContract.interface.encodeFunctionData(
+        "createAccount",
+        [ownerAddress, nSalt]
+      );
+
+      console.log("   Account not deployed");
+      console.log("   Factory:", factory);
+      console.log("   FactoryData:", factoryData);
+    }
+
+    // 4. Get nonce
+    const entryPoint = new ethers.Contract(
+      this.entryPointAddress,
+      EntryPointABI,
+      this.provider
+    );
+    const nonce = await entryPoint.getNonce(smartAccountAddress, 0);
+
+    // 5. Get gas info
+    const gasFees = await this.bundler.getGasFees();
+    const { maxPriorityFeePerGas } =
+      await this.bundler.getMaxPriorityFeePerGas_v2();
+
+    // 6. Set preliminary gas values
+    const callGasLimit = 200_000n;
+    const verificationGasLimit = isDeployed ? 150_000n : 500_000n;
+    const preVerificationGas = 50_000n;
+
+    // 7. Build preliminary UserOp (UNPACKED FORMAT for Alchemy)
+    const dummySignature = "0x" + "00".repeat(65);
+
+    const preliminaryUserOp = {
+      sender: smartAccountAddress,
+      nonce: ethers.toBeHex(nonce),
+      callData,
+      callGasLimit: ethers.toBeHex(callGasLimit),
+      verificationGasLimit: ethers.toBeHex(verificationGasLimit),
+      preVerificationGas: ethers.toBeHex(preVerificationGas),
+      maxFeePerGas: gasFees.maxFeePerGas,
+      maxPriorityFeePerGas: ethers.toBeHex(maxPriorityFeePerGas),
+      signature: dummySignature,
+      // Conditional fields for account deployment
+      ...(isDeployed
+        ? {}
+        : {
+            factory: factory,
+            factoryData: factoryData,
+          }),
+      // No paymaster
+      // paymaster, paymasterData, paymasterVerificationGasLimit, paymasterPostOpGasLimit omitted
+    };
+
+    console.log("   Preliminary UserOp:");
+    console.log(JSON.stringify(preliminaryUserOp, null, 2));
+
+    // 8. Estimate gas
+    let gasLimits;
+    try {
+      gasLimits = await this.bundler.estimateUserOperationGas(
+        preliminaryUserOp
+      );
+      console.log("   Estimated Gas Limits:", gasLimits);
+    } catch (error: any) {
+      console.error("Gas estimation failed:", error);
+      // Fallback to preliminary values
+      gasLimits = {
+        callGasLimit: ethers.toBeHex(callGasLimit),
+        verificationGasLimit: ethers.toBeHex(verificationGasLimit),
+        preVerificationGas: ethers.toBeHex(preVerificationGas),
+      };
+    }
+
+    // 9. Add 20% buffer to estimated gas
+    const finalCallGas = (BigInt(gasLimits.callGasLimit) * 120n) / 100n;
+    const finalVerificationGas =
+      (BigInt(gasLimits.verificationGasLimit) * 120n) / 100n;
+    const finalPreVerificationGas =
+      (BigInt(gasLimits.preVerificationGas) * 120n) / 100n;
+
+    // 10. Return final UserOp in unpacked format
+    const partialUserOp = {
+      sender: smartAccountAddress,
+      nonce: ethers.toBeHex(nonce),
+      callData,
+      callGasLimit: ethers.toBeHex(finalCallGas),
+      verificationGasLimit: ethers.toBeHex(finalVerificationGas),
+      preVerificationGas: ethers.toBeHex(finalPreVerificationGas),
+      maxFeePerGas: gasFees.maxFeePerGas,
+      maxPriorityFeePerGas: ethers.toBeHex(maxPriorityFeePerGas),
+      signature: "0x", // Frontend will sign
+      ...(isDeployed
+        ? {}
+        : {
+            factory: factory,
+            factoryData: factoryData,
+          }),
+    };
+
+    console.log("   UserOp built successfully");
+    return partialUserOp;
+  }
+
+  async buildTokenTransferUserOp(
+    smartAccountAddress: string,
+    ownerAddress: string,
+    toAddress: string,
+    amount: string,
+    isDeployed: boolean,
+    salt: string
   ): Promise<Partial<UserOperation>> {
     if (!smartAccountAddress) {
       throw new Error("Smart account address is required");
@@ -144,33 +327,59 @@ async buildTokenTransferUserOp(
     // -------------------------------
     let initCode = "0x";
     if (!isDeployed) {
-      const factory = new Contract(
+      const factory = new ethers.Contract(
         this.factoryAddress,
         FactoryABI,
         this.provider
       );
-      const predictedAddress = await (factory as any).getAddress(
-        ownerAddress,
-        salt
-      );
-      console.log("   Predicted Address:", predictedAddress);
-      console.log("   SmartWallet:", smartAccountAddress);
+      console.log("Factory Connected Address", await factory.getAddress());
+      console.log("Predicting smart account address...");
+      const nSalt: bigint = BigInt(salt);
+      console.log(salt); // Output: 123456789012345678901234567890n
+      console.log(typeof nSalt); // Output: bigint
 
-      initCode = ethers.concat([
-        this.factoryAddress,
-        (factory as any).interface.encodeFunctionData("createAccount", [
-          ownerAddress,
-          ethers.toBigInt(salt),
-        ]),
+      // Verify predicted address matches
+      const predictedAddress = await factory["getAddress(address,uint256)"](
+        ownerAddress,
+        nSalt
+      );
+
+      console.log("Factory Address: ", this.factoryAddress);
+      console.log("Salt:", nSalt);
+      console.log("Predicted Address:", predictedAddress);
+      console.log("Owner Address: ", ownerAddress);
+
+      this.init();
+
+      if (
+        predictedAddress.toLowerCase() !== smartAccountAddress.toLowerCase()
+      ) {
+        throw new Error(
+          `Address mismatch! Predicted: ${predictedAddress}, Expected: ${smartAccountAddress}`
+        );
+      }
+
+      const createAccountCallData = (
+        factory as any
+      ).interface.encodeFunctionData("createAccount", [
+        ownerAddress,
+        ethers.toBigInt(salt),
       ]);
 
-      console.log("   Account not deployed, initCode added for deployment");
+      // initCode = factory address (20 bytes) + createAccount calldata
+      initCode = ethers.concat([this.factoryAddress, createAccountCallData]);
+
+      // const initCode = this.factoryAddress + createAccountCallData.slice(2);
+
+      console.log("   Account not deployed, initCode added");
+      console.log("   Factory:", this.factoryAddress);
+      console.log("   InitCode:", initCode);
     }
 
     // -------------------------------
     // 4. Get nonce from EntryPoint
     // -------------------------------
-    const entryPoint = new Contract(
+    const entryPoint = new ethers.Contract(
       this.entryPointAddress,
       EntryPointABI,
       this.provider
@@ -186,7 +395,10 @@ async buildTokenTransferUserOp(
 
     console.log("   Gas Fees:");
     console.log("   Max Fee Per Gas:", gasFees.maxFeePerGas);
-    console.log("   Max Priority Fee Per Gas:", maxPriorityFeePerGas);
+    console.log(
+      "   Max Priority Fee Per Gas:",
+      maxPriorityFeePerGas.toString()
+    );
     console.log("   Nonce:", nonce.toString());
 
     // -------------------------------
@@ -208,8 +420,9 @@ async buildTokenTransferUserOp(
     // -------------------------------
     // 7. Build preliminary UserOp for gas estimation
     // -------------------------------
-    const dummySignature =
-      "0xfffffffffffffffffffffffffffffff0000000000000000000000000000000007aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1c";
+    // const dummySignature =
+    //   "0xfffffffffffffffffffffffffffffff0000000000000000000000000000000007aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1c";
+    const dummySignature = "0x" + "00".repeat(65);
 
     const preliminaryUserOp = {
       sender: smartAccountAddress,
@@ -223,11 +436,8 @@ async buildTokenTransferUserOp(
       signature: dummySignature,
     };
 
-    console.log("   Preliminary UserOp:", {
-      ...preliminaryUserOp,
-      accountGasLimits: `0x${preliminaryUserOp.accountGasLimits}`,
-      gasFees: `0x${preliminaryUserOp.gasFees}`
-    });
+    console.log("   Preliminary UserOp:");
+    console.log(JSON.stringify(preliminaryUserOp, null, 2));
 
     // -------------------------------
     // 8. Estimate gas via bundler
@@ -237,34 +447,31 @@ async buildTokenTransferUserOp(
       gasLimits = await this.bundler.estimateUserOperationGas(
         preliminaryUserOp
       );
+      console.log("   Gas Limits:");
+      console.log("   Call Gas:", gasLimits.callGasLimit);
+      console.log("   Verification Gas:", gasLimits.verificationGasLimit);
+      console.log("   PreVerification Gas:", gasLimits.preVerificationGas);
     } catch (error: any) {
       console.error("Gas estimation failed:", error);
       // If estimation fails, use fallback values
       gasLimits = {
         callGasLimit: ethers.toBeHex(callGasLimit),
         verificationGasLimit: ethers.toBeHex(verificationGasLimit),
-        preVerificationGas: ethers.toBeHex(preVerificationGas)
+        preVerificationGas: ethers.toBeHex(preVerificationGas),
       };
     }
 
-    console.log("   Gas Limits:");
-    console.log("   Call Gas Limit:", gasLimits.callGasLimit.toString());
-    console.log(
-      "   Verification Gas Limit:",
-      gasLimits.verificationGasLimit.toString()
-    );
-    console.log(
-      "   Pre-Verification Gas:",
-      gasLimits.preVerificationGas.toString()
-    );
-
     // Update accountGasLimits with actual estimated gas (add 20% buffer)
-    const finalCallGasLimit = (ethers.toBigInt(gasLimits.callGasLimit) * 120n) / 100n;
-    const finalVerificationGasLimit = (ethers.toBigInt(gasLimits.verificationGasLimit) * 120n) / 100n;
+    const finalCallGas =
+      (ethers.toBigInt(gasLimits.callGasLimit) * 120n) / 100n;
+    const finalVerificationGas =
+      (ethers.toBigInt(gasLimits.verificationGasLimit) * 120n) / 100n;
+    const finalPreVerificationGas =
+      (ethers.toBigInt(gasLimits.preVerificationGas) * 120n) / 100n;
 
     const finalAccountGasLimits = this.packAccountGasLimits(
-      finalVerificationGasLimit,
-      finalCallGasLimit
+      finalVerificationGas,
+      finalCallGas
     );
 
     // -------------------------------
@@ -276,9 +483,7 @@ async buildTokenTransferUserOp(
       initCode,
       callData,
       accountGasLimits: finalAccountGasLimits,
-      preVerificationGas: ethers.toBeHex(
-        (ethers.toBigInt(gasLimits.preVerificationGas) * 120n) / 100n
-      ),
+      preVerificationGas: ethers.toBeHex(finalPreVerificationGas),
       gasFees: packedGasFees,
       paymasterAndData: "0x", // backend adds paymaster signature on submit
       signature: "0x", // frontend signs
@@ -335,7 +540,7 @@ async buildTokenTransferUserOp(
     if (!isDeployed) {
       // Will be filled by frontend with factory.createAccount()
       // console.log('   Account not deployed, will deploy on first tx');
-      const factory = new Contract(
+      const factory = new ethers.Contract(
         this.factoryAddress,
         FactoryABI,
         this.provider
@@ -358,7 +563,7 @@ async buildTokenTransferUserOp(
     }
 
     // 4. Get nonce
-    const entryPoint = new Contract(
+    const entryPoint = new ethers.Contract(
       this.entryPointAddress,
       EntryPointABI,
       this.provider
@@ -504,7 +709,7 @@ async buildTokenTransferUserOp(
     const validAfter = 0;
 
     // 1. Compute userOpHash using EntryPoint contract
-    const entryPoint = new Contract(
+    const entryPoint = new ethers.Contract(
       this.entryPointAddress,
       EntryPointABI,
       this.provider

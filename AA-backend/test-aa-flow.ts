@@ -1,8 +1,11 @@
-import { FactoryABI } from "./src/abis/FactoryAbi";
+import  FactoryABI  from "./src/abis/FactoryABI.json";
 import { AbiCoder, Contract, ethers, HDNodeWallet, Wallet } from "ethers";
 import axios from "axios";
 import chalk from "chalk";
 import dotenv from "dotenv";
+import ERC1967ProxyBytecode from "./src/abis/ERC1967ProxyBytecode";
+import crypto from "crypto";
+
 
 dotenv.config();
 
@@ -15,6 +18,7 @@ const config = {
   paymaster: process.env.PAYMASTER_ADDRESS!,
   token: process.env.UMC_TOKEN_ADDRESS!,
   chainId: 11155111, // Sepolia
+  provider: new ethers.JsonRpcProvider(process.env.SEPOLIA_RPC_URL!),
 };
 
 // ============================================
@@ -98,31 +102,34 @@ class AAClient {
 
       // Device generates everything locally
       const ownerWalletAddress = this.deviceKey.getPublicKey();
-      const salt = Math.floor(Math.random() * 1000000);
+      // const salt = Math.floor(Math.random() * 1000000);
+      // const { predictedAddress, salt, salt_BigInt } = await predictSmartAccountAddress(config.provider, config.factory, ownerWalletAddress);
 
       // Generate decrypting key (for recovery)
       const decryptingKey = ethers.Wallet.createRandom().privateKey;
 
-      console.log(chalk.blue("\n📱 Device Generated:"));
-      console.log("   Owner Wallet:", ownerWalletAddress);
-      console.log("   Salt:", salt);
-      console.log(
-        "   Decrypting Key:",
-        chalk.gray(decryptingKey.slice(0, 20) + "...")
-      );
+      // console.log(chalk.blue("\n📱 Device Generated:"));
+      // console.log("   Owner Wallet:", ownerWalletAddress);
+      // console.log("   Salt Hex:", salt);
+      // console.log("   Salt Decimal:", salt_BigInt);
+      // console.log(
+      //   "   Decrypting Key:",
+      //   chalk.gray(decryptingKey.slice(0, 20) + "...")
+      // );
 
-      // Calculate counterfactual address locally (optional verification)
-      const factory = new Contract(
-        config.factory,
-        FactoryABI,
-        new ethers.JsonRpcProvider(config.rpcUrl)
-      );
+      // // Calculate counterfactual address locally (optional verification)
+      // // const factory = new Contract(
+      // //   config.factory,
+      // //   FactoryABI,
+      // //   new ethers.JsonRpcProvider(config.rpcUrl)
+      // // );
 
-      const counterfactualAddress = await (factory as any).getAddress(
-        ownerWalletAddress,
-        ethers.toBigInt(salt)
-      );
-      console.log("   Counterfactual Address:", counterfactualAddress);
+      // // const counterfactualAddress = await (factory as any).getAddress(
+      // //   ownerWalletAddress,
+      // //   ethers.toBigInt(salt)
+      // // );
+      // const counterfactualAddress = predictedAddress;
+      // console.log("   Counterfactual Address:", counterfactualAddress);
 
       const response = await this.request("POST", "/api/auth/register", {
         username,
@@ -130,7 +137,6 @@ class AAClient {
         password,
         ownerWalletAddress,
         decryptingKey,
-        salt,
       });
 
       this.token = response.data.token;
@@ -472,7 +478,7 @@ async function testTransaction() {
 //       'TestPassword123!'
 //   );
   
-    await client.login("test_1762975109752", "TestPassword123!");
+    await client.login("test_1763161258489", "TestPassword123!");
 
   // Send transaction
   const result = await client.sendTransaction(
@@ -496,7 +502,7 @@ async function testBuildUserOperation() {
     //     "test@example.com",
     //     "TestPassword123!"
     // );
-    await client.login("test_1762975109752", "TestPassword123!");
+    await client.login("test_1763161258489", "TestPassword123!");
 
     const result = await client.buildUserOperation(
         // '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb1',
@@ -553,3 +559,66 @@ const command = args[0];
     process.exit(1);
   }
 })();
+
+
+export async function predictSmartAccountAddress(
+  provider: ethers.JsonRpcProvider,
+  factoryAddress: string,
+  owner: string,
+  saltNumber?: number
+): Promise<{ predictedAddress: string; salt: string, salt_BigInt: any }> {
+  // 1️⃣ Connect to the factory contract (read-only)
+  const factory = new ethers.Contract(factoryAddress, FactoryABI, provider);
+
+  // 2️⃣ Get the account implementation contract
+  const accountImpl: string = await factory.ACCOUNT_IMPLEMENTATION();
+
+  // 3️⃣ Encode initialize calldata
+  const iface = new ethers.Interface(["function initialize(address owner)"]);
+  const proxyInitData = iface.encodeFunctionData("initialize", [owner]);
+
+  // // 4️⃣ ERC1967Proxy bytecode (hardcoded or from compiled artifact)
+  // const ERC1967ProxyBytecode =
+  //   "0x608060405261029d8038038061001481610168565b92833981016040828203126101645781516001600160a01b03811692909190838303610164576020810151906001600160401b03821161016457019281601f8501121561016457835161006e610069826101a1565b610168565b9481865260208601936020838301011161016457815f926020809301865e86010152823b15610152577f360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc80546001600160a01b031916821790557fbc7cd75a20ee27fd9adebab32041f755214dbc6bffa90cc0225b39da2e5c2d3b5f80a282511561013a575f8091610122945190845af43d15610132573d91610113610069846101a1565b9283523d5f602085013e6101bc565b505b6040516082908161021b8239f35b6060916101bc565b50505034156101245763b398979f60e01b5f5260045ffd5b634c9c8ce360e01b5f5260045260245ffd5b5f80fd5b6040519190601f01601f191682016001600160401b0381118382101761018d57604052565b634e487b7160e01b5f52604160045260245ffd5b6001600160401b03811161018d57601f01601f191660200190565b906101e057508051156101d157805190602001fd5b63d6bda27560e01b5f5260045ffd5b81511580610211575b6101f1575090565b639996b31560e01b5f9081526001600160a01b0391909116600452602490fd5b50803b156101e956fe60806040527f360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc545f9081906001600160a01b0316368280378136915af43d5f803e156048573d5ff35b3d5ffdfea26469706673582212203d5f7c2fec6b8fd34ebd86e95761dd5d04b25456e0f1a87e2223212a86763f4364736f6c634300081c0033";
+
+  // 5️⃣ Construct full CREATE2 init code
+  const bytecode = ethers.concat([
+    ethers.getBytes(ERC1967ProxyBytecode),
+    ethers.AbiCoder.defaultAbiCoder().encode(
+      ["address", "bytes"],
+      [accountImpl, proxyInitData]
+    ),
+  ]);
+
+  // 6️⃣ Generate salt
+  let salt: string;
+  if (saltNumber !== undefined) {
+    // deterministic numeric salt
+    salt = "0x" + BigInt(saltNumber).toString(16).padStart(64, "0");
+  } else {
+    // random 32-byte salt
+    salt = "0x" + crypto.randomBytes(32).toString("hex");
+  }
+
+  // 7️⃣ Compute predicted CREATE2 address
+  const predictedAddress = ethers.getCreate2Address(
+    factoryAddress,
+    salt,
+    ethers.keccak256(bytecode)
+  );
+
+    const salt_BigInt = hexToBigInt(salt).toString();
+  
+
+  return { predictedAddress, salt, salt_BigInt};
+}
+
+export function hexToBigInt(hexString: string): BigInt {
+  // The BigInt constructor handles the '0x' prefix automatically
+  try {
+    return BigInt(hexString);
+  } catch (error) {
+    console.error("Invalid hex string provided:", error);
+    throw new Error("Failed to convert hex string to BigInt.");
+  }
+}

@@ -36,6 +36,9 @@ export class User {
   @Column({ name: "deployment_salt", unique: true })
   salt!: string;
 
+  @Column({ name: "salt_decimal", unique: true })
+  saltDecimal!: string;
+
   @Column({ name: "decrypting_key" })
   decryptingKey!: string;
 

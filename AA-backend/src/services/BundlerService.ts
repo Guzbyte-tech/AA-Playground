@@ -30,6 +30,24 @@ export interface UserOperation {
     signature: string;
 }
 
+export interface AlchemyUserOperationV7 {
+  sender: string;
+  nonce: string;
+  callData: string;
+  callGasLimit: string;
+  verificationGasLimit: string;
+  preVerificationGas: string;
+  maxFeePerGas: string;
+  maxPriorityFeePerGas: string;
+  signature: string;
+  factory?: string; // Only if account needs deployment
+  factoryData?: string; // Only if account needs deployment
+  paymaster?: string; // Only if using paymaster
+  paymasterData?: string;
+  paymasterVerificationGasLimit?: string;
+  paymasterPostOpGasLimit?: string;
+}
+
 
 export class BundlerService {
     private bundlerUrl: string;
@@ -133,7 +151,7 @@ export class BundlerService {
     /**
      * Estimate UserOperation gas
      */
-    async estimateUserOperationGas(userOp: any): Promise<{
+    async estimateUserOperationGasOld(userOp: any): Promise<{
         preVerificationGas: string;
         verificationGasLimit: string;
         callGasLimit: string;
@@ -164,6 +182,50 @@ export class BundlerService {
             throw error;
         }
     }
+
+    async estimateUserOperationGas(userOp: any): Promise<{
+    preVerificationGas: string;
+    verificationGasLimit: string;
+    callGasLimit: string;
+}> {
+    try {
+        const response = await axios.post(
+            this.bundlerUrl,
+            {
+                jsonrpc: '2.0',
+                method: 'eth_estimateUserOperationGas',
+                params: [userOp, this.entryPoint],
+                id: 1,
+            },
+            {
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            }
+        );
+
+        if ((response.data as any).error) {
+            // Log the complete error object
+            console.error('Full bundler error:', JSON.stringify((response.data as any).error, null, 2));
+            
+            // The error.data field often contains the revert reason
+            if ((response.data as any).error.data) {
+                console.error('Error data:', (response.data as any).error.data);
+            }
+            
+            throw new Error(`Gas estimation failed: ${(response.data as any).error.message}`);
+        }
+        
+        return (response.data as any).result;
+    } catch (error: any) {
+        // Log everything we can get
+        if (error.response?.data) {
+            console.error('Response error data:', JSON.stringify(error.response.data, null, 2));
+        }
+        console.error('Full error object:', error);
+        throw error;
+    }
+}
 
     async getMaxPriorityFeePerGas(): Promise<{
         maxPriorityFeePerGas: string;

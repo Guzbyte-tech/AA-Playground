@@ -33,13 +33,13 @@ export class TransactionController {
             console.log('Amount:', amount);
 
             // Build UserOp (unsigned)
-            const partialUserOp = await this.aaService.buildTokenTransferUserOp(
+            const partialUserOp = await this.aaService.buildTokenTransferUserOpAlchemyV7(
                 user.smartAccountAddress,
                 user.ownerAddress,
                 to,
                 amount,
                 user.isAccountDeployed,
-                user.salt
+                user.saltDecimal
             );
             console.log('Partial UserOp:', partialUserOp);
             res.json({
