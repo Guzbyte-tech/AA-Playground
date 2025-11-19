@@ -86,7 +86,6 @@ contract SmartUserAccount is BaseAccount, Initializable, UUPSUpgradeable{
     ) external virtual override returns (uint256 validationData) {
         _requireFromEntryPoint();
         validationData = _validateSignature(userOp, userOpHash);
-        _validateNonce(userOp.nonce);
         _payPrefund(missingAccountFunds);
     }
 
@@ -186,11 +185,24 @@ contract SmartUserAccount is BaseAccount, Initializable, UUPSUpgradeable{
         PackedUserOperation calldata userOp,
         bytes32 userOpHash
     ) internal override view returns (uint256 validationData) {
-        // bytes32 hash = userOpHash.toEthSignedMessageHash();
         bytes32 hash = MessageHashUtils.toEthSignedMessageHash(userOpHash);
-        if (owner != hash.recover(userOp.signature)) {
+        
+        // tryRecover returns (address recovered, RecoverError error, bytes32 errorArg)
+        // It will NOT revert on invalid signatures, making gas estimation work
+        (address recovered, ECDSA.RecoverError error, ) = ECDSA.tryRecover(hash, userOp.signature);
+        
+        // Check if recovery succeeded and signer matches owner
+        if (error != ECDSA.RecoverError.NoError) {
+            // Invalid signature format (too short, too long, invalid values, etc.)
             return SIG_VALIDATION_FAILED;
         }
+        
+        if (recovered != owner) {
+            // Valid signature format but wrong signer
+            return SIG_VALIDATION_FAILED;
+        }
+        
+        // Signature is valid and from the owner
         return SIG_VALIDATION_SUCCESS;
     }
 

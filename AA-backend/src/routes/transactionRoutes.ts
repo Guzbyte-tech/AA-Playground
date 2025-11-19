@@ -17,5 +17,8 @@ router.post("/build", authMiddleware, transactionController.buildUserOp);
 router.post("/submit", authMiddleware, transactionController.submitTransaction);
 router.post("/status", authMiddleware, transactionController.getTransactionStatus);
 
+// For Testing
+router.post("/cal_paymasterData", authMiddleware, transactionController.calculatePaymasterData);
+
 
 export default router;

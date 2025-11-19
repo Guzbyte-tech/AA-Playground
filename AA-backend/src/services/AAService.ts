@@ -7,6 +7,8 @@ import {
 import crypto from "crypto";
 
 import FactoryABI from "../abis/FactoryABI.json";
+import PayMasterABI from "../abis/PayMasterABI.json";
+import SmartAccountABI from "../abis/SmartAccountABI.json";
 
 import { EntryPointABI } from "../abis/EntryPointABI";
 import dotenv from "dotenv";
@@ -16,6 +18,8 @@ import {
   packAccountGasLimits,
   packGasFees,
   predictSmartAccountAddress,
+  unpackAccountGasLimits,
+  unpackGasFees,
 } from "../utils/helpers";
 import { Signature } from "ethers";
 
@@ -133,7 +137,10 @@ export class AAService {
     amount: string,
     isDeployed: boolean,
     salt: string
-  ): Promise<Partial<UserOperation>> {
+  ): Promise<{
+    alchemyUserOp: Partial<AlchemyUserOperationV7>;
+    entryPointPackedUserOp: UserOperation;
+  }> {
     if (!smartAccountAddress) {
       throw new Error("Smart account address is required");
     }
@@ -161,6 +168,7 @@ export class AAService {
     // 3. Prepare factory and factoryData (instead of initCode)
     let factory = "0x";
     let factoryData = "0x";
+    let initCode = "0x";
 
     if (!isDeployed) {
       const factoryContract = new ethers.Contract(
@@ -188,6 +196,13 @@ export class AAService {
         "createAccount",
         [ownerAddress, nSalt]
       );
+      initCode = ethers.concat([
+        this.factoryAddress,
+        factoryContract.interface.encodeFunctionData("createAccount", [
+          ownerAddress,
+          nSalt,
+        ]),
+      ]);
 
       console.log("   Account not deployed");
       console.log("   Factory:", factory);
@@ -204,8 +219,8 @@ export class AAService {
 
     // 5. Get gas info
     const gasFees = await this.bundler.getGasFees();
-    const { maxPriorityFeePerGas } =
-      await this.bundler.getMaxPriorityFeePerGas_v2();
+    // const { maxPriorityFeePerGas } =
+    //   await this.bundler.getMaxPriorityFeePerGas_v2();
 
     // 6. Set preliminary gas values
     const callGasLimit = 200_000n;
@@ -223,7 +238,8 @@ export class AAService {
       verificationGasLimit: ethers.toBeHex(verificationGasLimit),
       preVerificationGas: ethers.toBeHex(preVerificationGas),
       maxFeePerGas: gasFees.maxFeePerGas,
-      maxPriorityFeePerGas: ethers.toBeHex(maxPriorityFeePerGas),
+      // maxPriorityFeePerGas: ethers.toBeHex(maxPriorityFeePerGas),
+      maxPriorityFeePerGas: gasFees.maxPriorityFeePerGas,
       signature: dummySignature,
       // Conditional fields for account deployment
       ...(isDeployed
@@ -263,16 +279,17 @@ export class AAService {
     const finalPreVerificationGas =
       (BigInt(gasLimits.preVerificationGas) * 120n) / 100n;
 
-    // 10. Return final UserOp in unpacked format
-    const partialUserOp = {
+    // 10. Return final UserOp in BOTH format
+    const alchemyUserOp = {
       sender: smartAccountAddress,
       nonce: ethers.toBeHex(nonce),
+      // initCode,
       callData,
       callGasLimit: ethers.toBeHex(finalCallGas),
       verificationGasLimit: ethers.toBeHex(finalVerificationGas),
       preVerificationGas: ethers.toBeHex(finalPreVerificationGas),
       maxFeePerGas: gasFees.maxFeePerGas,
-      maxPriorityFeePerGas: ethers.toBeHex(maxPriorityFeePerGas),
+      maxPriorityFeePerGas: gasFees.maxPriorityFeePerGas,
       signature: "0x", // Frontend will sign
       ...(isDeployed
         ? {}
@@ -282,425 +299,28 @@ export class AAService {
           }),
     };
 
-    console.log("   UserOp built successfully");
-    return partialUserOp;
-  }
-
-  async buildTokenTransferUserOp(
-    smartAccountAddress: string,
-    ownerAddress: string,
-    toAddress: string,
-    amount: string,
-    isDeployed: boolean,
-    salt: string
-  ): Promise<Partial<UserOperation>> {
-    if (!smartAccountAddress) {
-      throw new Error("Smart account address is required");
-    }
-    console.log("Building UserOp...");
-
-    // -------------------------------
-    // 1. Encode token transfer
-    // -------------------------------
-    const tokenInterface = new ethers.Interface([
-      "function transfer(address,uint256) returns (bool)",
-    ]);
-    const transferData = tokenInterface.encodeFunctionData("transfer", [
-      toAddress,
-      ethers.parseUnits(amount, 18),
-    ]);
-
-    // -------------------------------
-    // 2. Encode account.execute()
-    // -------------------------------
-    const accountInterface = new ethers.Interface([
-      "function execute(address,uint256,bytes)",
-    ]);
-    const callData = accountInterface.encodeFunctionData("execute", [
-      process.env.UMC_TOKEN_ADDRESS!,
-      0,
-      transferData,
-    ]);
-
-    // -------------------------------
-    // 3. Prepare initCode if account not deployed
-    // -------------------------------
-    let initCode = "0x";
-    if (!isDeployed) {
-      const factory = new ethers.Contract(
-        this.factoryAddress,
-        FactoryABI,
-        this.provider
-      );
-      console.log("Factory Connected Address", await factory.getAddress());
-      console.log("Predicting smart account address...");
-      const nSalt: bigint = BigInt(salt);
-      console.log(salt); // Output: 123456789012345678901234567890n
-      console.log(typeof nSalt); // Output: bigint
-
-      // Verify predicted address matches
-      const predictedAddress = await factory["getAddress(address,uint256)"](
-        ownerAddress,
-        nSalt
-      );
-
-      console.log("Factory Address: ", this.factoryAddress);
-      console.log("Salt:", nSalt);
-      console.log("Predicted Address:", predictedAddress);
-      console.log("Owner Address: ", ownerAddress);
-
-      this.init();
-
-      if (
-        predictedAddress.toLowerCase() !== smartAccountAddress.toLowerCase()
-      ) {
-        throw new Error(
-          `Address mismatch! Predicted: ${predictedAddress}, Expected: ${smartAccountAddress}`
-        );
-      }
-
-      const createAccountCallData = (
-        factory as any
-      ).interface.encodeFunctionData("createAccount", [
-        ownerAddress,
-        ethers.toBigInt(salt),
-      ]);
-
-      // initCode = factory address (20 bytes) + createAccount calldata
-      initCode = ethers.concat([this.factoryAddress, createAccountCallData]);
-
-      // const initCode = this.factoryAddress + createAccountCallData.slice(2);
-
-      console.log("   Account not deployed, initCode added");
-      console.log("   Factory:", this.factoryAddress);
-      console.log("   InitCode:", initCode);
-    }
-
-    // -------------------------------
-    // 4. Get nonce from EntryPoint
-    // -------------------------------
-    const entryPoint = new ethers.Contract(
-      this.entryPointAddress,
-      EntryPointABI,
-      this.provider
-    );
-    const nonce = await entryPoint.getNonce(smartAccountAddress, 0);
-
-    // -------------------------------
-    // 5. Get gas info from bundler
-    // -------------------------------
-    const gasFees = await this.bundler.getGasFees();
-    const { maxPriorityFeePerGas } =
-      await this.bundler.getMaxPriorityFeePerGas_v2();
-
-    console.log("   Gas Fees:");
-    console.log("   Max Fee Per Gas:", gasFees.maxFeePerGas);
-    console.log(
-      "   Max Priority Fee Per Gas:",
-      maxPriorityFeePerGas.toString()
-    );
-    console.log("   Nonce:", nonce.toString());
-
-    // -------------------------------
-    // 6. Set preliminary gas values (INCREASED for estimation)
-    // -------------------------------
-    const callGasLimit = 2_000_000n;
-    const verificationGasLimit = isDeployed ? 150_000n : 1_000_000n; // Higher if deploying
-    const preVerificationGas = 100_000n;
-
-    const accountGasLimits = this.packAccountGasLimits(
-      verificationGasLimit,
-      callGasLimit
-    );
-    const packedGasFees = this.packGasFees(
-      ethers.toBigInt(maxPriorityFeePerGas),
-      ethers.toBigInt(gasFees.maxFeePerGas)
-    );
-
-    // -------------------------------
-    // 7. Build preliminary UserOp for gas estimation
-    // -------------------------------
-    // const dummySignature =
-    //   "0xfffffffffffffffffffffffffffffff0000000000000000000000000000000007aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1c";
-    const dummySignature = "0x" + "00".repeat(65);
-
-    const preliminaryUserOp = {
+    // EntryPoint v0.7 format (packed)
+    const entryPointPackedUserOp: UserOperation = {
       sender: smartAccountAddress,
       nonce: ethers.toBeHex(nonce),
-      initCode,
-      callData,
-      accountGasLimits,
-      preVerificationGas: ethers.toBeHex(preVerificationGas),
-      gasFees: packedGasFees,
-      paymasterAndData: "0x", // Empty for estimation
-      signature: dummySignature,
-    };
-
-    console.log("   Preliminary UserOp:");
-    console.log(JSON.stringify(preliminaryUserOp, null, 2));
-
-    // -------------------------------
-    // 8. Estimate gas via bundler
-    // -------------------------------
-    let gasLimits;
-    try {
-      gasLimits = await this.bundler.estimateUserOperationGas(
-        preliminaryUserOp
-      );
-      console.log("   Gas Limits:");
-      console.log("   Call Gas:", gasLimits.callGasLimit);
-      console.log("   Verification Gas:", gasLimits.verificationGasLimit);
-      console.log("   PreVerification Gas:", gasLimits.preVerificationGas);
-    } catch (error: any) {
-      console.error("Gas estimation failed:", error);
-      // If estimation fails, use fallback values
-      gasLimits = {
-        callGasLimit: ethers.toBeHex(callGasLimit),
-        verificationGasLimit: ethers.toBeHex(verificationGasLimit),
-        preVerificationGas: ethers.toBeHex(preVerificationGas),
-      };
-    }
-
-    // Update accountGasLimits with actual estimated gas (add 20% buffer)
-    const finalCallGas =
-      (ethers.toBigInt(gasLimits.callGasLimit) * 120n) / 100n;
-    const finalVerificationGas =
-      (ethers.toBigInt(gasLimits.verificationGasLimit) * 120n) / 100n;
-    const finalPreVerificationGas =
-      (ethers.toBigInt(gasLimits.preVerificationGas) * 120n) / 100n;
-
-    const finalAccountGasLimits = this.packAccountGasLimits(
-      finalVerificationGas,
-      finalCallGas
-    );
-
-    // -------------------------------
-    // 9. Build partial UserOp for frontend to sign
-    // -------------------------------
-    const partialUserOp: Partial<UserOperation> = {
-      sender: smartAccountAddress,
-      nonce: ethers.toBeHex(nonce),
-      initCode,
-      callData,
-      accountGasLimits: finalAccountGasLimits,
+      initCode: initCode,
+      callData: callData,
+      accountGasLimits: this.packAccountGasLimits(
+        finalVerificationGas,
+        finalCallGas
+      ),
       preVerificationGas: ethers.toBeHex(finalPreVerificationGas),
-      gasFees: packedGasFees,
-      paymasterAndData: "0x", // backend adds paymaster signature on submit
-      signature: "0x", // frontend signs
+      gasFees: this.packGasFees(
+        BigInt(gasFees.maxPriorityFeePerGas),
+        BigInt(gasFees.maxFeePerGas)
+      ),
+      paymasterAndData: "0x", // No paymaster
+      signature: "0x", // Frontend will sign
     };
 
     console.log("   UserOp built successfully");
-    return partialUserOp;
+    return { alchemyUserOp, entryPointPackedUserOp };
   }
-
-  /**
-   * Build UserOperation for token transfer
-   * Device will sign this UserOp
-   */
-  async buildTokenTransferUserOpOld(
-    smartAccountAddress: string,
-    ownerAddress: string,
-    toAddress: string,
-    amount: string,
-    isDeployed: boolean,
-    salt: any
-  ): Promise<Partial<UserOperation>> {
-    if (!smartAccountAddress) {
-      throw new Error("Smart account address is required");
-    }
-    console.log("Building UserOp...");
-
-    // 1. Encode token transfer
-    const tokenInterface = new ethers.Interface([
-      "function transfer(address,uint256) returns (bool)",
-    ]);
-    const transferData = tokenInterface.encodeFunctionData("transfer", [
-      toAddress,
-      ethers.parseUnits(amount, 18),
-    ]);
-
-    // 2. Encode account.execute()
-    const accountInterface = new ethers.Interface([
-      "function execute(address,uint256,bytes)",
-    ]);
-    const callData = accountInterface.encodeFunctionData("execute", [
-      process.env.UMC_TOKEN_ADDRESS!,
-      0,
-      transferData,
-    ]);
-
-    // Predicted Address
-    const dummySignature =
-      "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff" +
-      "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff" +
-      "1c";
-
-    // 3. Get initCode if not deployed
-    let initCode = "0x";
-    if (!isDeployed) {
-      // Will be filled by frontend with factory.createAccount()
-      // console.log('   Account not deployed, will deploy on first tx');
-      const factory = new ethers.Contract(
-        this.factoryAddress,
-        FactoryABI,
-        this.provider
-      );
-      const predictedAddress = await (factory as any).getAddress(
-        ownerAddress,
-        salt
-      );
-      console.log("   Predicted Address:", predictedAddress);
-      console.log("   SmartWallet:", smartAccountAddress);
-      // const salt = 0; // default, or pass from frontend if needed
-      initCode = ethers.concat([
-        this.factoryAddress,
-        (factory as any).interface.encodeFunctionData("createAccount", [
-          ownerAddress,
-          ethers.toBigInt(salt),
-        ]),
-      ]);
-      console.log("   Account not deployed, initCode added for deployment");
-    }
-
-    // 4. Get nonce
-    const entryPoint = new ethers.Contract(
-      this.entryPointAddress,
-      EntryPointABI,
-      this.provider
-    );
-    const nonce =
-      "0x" + (await entryPoint.getNonce(smartAccountAddress, 0)).toString(16);
-
-    // 5. Get gas prices
-    const gasFees = await this.bundler.getGasFees();
-    // const {maxPriorityFeePerGas} = await this.bundler.getMaxPriorityFeePerGas();
-    const { maxPriorityFeePerGas } =
-      await this.bundler.getMaxPriorityFeePerGas_v2();
-
-    console.log("   Gas Fees:");
-    console.log("   Max Fee Per Gas:", gasFees.maxFeePerGas);
-    console.log("   Max Priority Fee Per Gas:", maxPriorityFeePerGas);
-    console.log("   Nonce", nonce);
-
-    const callGasLimit = 1_000_000n;
-    const verificationGasLimit = 100_000n;
-    const preVerificationGas = 21_000n;
-
-    const accountGasLimits = packAccountGasLimits(
-      verificationGasLimit,
-      callGasLimit
-    );
-    const pgasFees = packGasFees(
-      maxPriorityFeePerGas,
-      ethers.toBigInt(gasFees.maxFeePerGas)
-    );
-
-    // 6. Build preliminary UserOp (needed for gas estimation)
-    const preliminaryUserOp = {
-      sender: smartAccountAddress,
-      nonce,
-      initCode,
-      callData,
-      // callGasLimit: toBeHex(ethers.parseUnits("1000000", 0)),
-      // verificationGasLimit: toBeHex(ethers.parseUnits("100000", 0)),
-      accountGasLimits,
-      preVerificationGas: toBeHex(ethers.parseUnits("21000", 0)),
-      // maxFeePerGas: toBeHex(gasFees.maxFeePerGas),
-      // // maxFeePerGas: '0x',
-      // maxPriorityFeePerGas: toBeHex(maxPriorityFeePerGas),
-      // // maxPriorityFeePerGas: '0x',
-      // paymasterAndData: '0x',
-      gasFees: pgasFees,
-      // signature: '0x',
-      signature: dummySignature,
-    };
-
-    console.log("   Preliminary UserOp:", preliminaryUserOp);
-
-    // 7. Estimate gas via bundler
-    const gasLimits = await this.bundler.estimateUserOperationGas(
-      preliminaryUserOp
-    );
-
-    console.log("   Gas Limits:");
-    console.log("   Call Gas Limit:", gasLimits.callGasLimit.toString());
-    console.log(
-      "   Verification Gas Limit:",
-      gasLimits.verificationGasLimit.toString()
-    );
-    console.log(
-      "   Pre-Verification Gas:",
-      gasLimits.preVerificationGas.toString()
-    );
-
-    // 6. Build partial UserOp (device will complete and sign)
-    const partialUserOp: Partial<UserOperation> = {
-      ...preliminaryUserOp,
-      accountGasLimits,
-      preVerificationGas: gasLimits.preVerificationGas.toString(),
-      gasFees: pgasFees,
-      // sender: smartAccountAddress,
-      // nonce,
-      // initCode,
-      // callData,
-      // callGasLimit: gasLimits.callGasLimit.toString(),
-      // verificationGasLimit: gasLimits.verificationGasLimit.toString(),
-      // preVerificationGas: gasLimits.preVerificationGas.toString(),
-      // maxFeePerGas: gasFees.maxFeePerGas,
-      // maxPriorityFeePerGas: maxPriorityFeePerGas.toString(),
-      // paymasterAndData: '0x', // backend adds paymaster signature on submit
-      // signature: '0x' // frontend signs
-    };
-
-    console.log("   UserOp built successfully");
-    return partialUserOp;
-  }
-
-  /**
-   * Add paymaster signature to sponsor gas
-   * This is what backend does - sponsors the transaction!
-   */
-  // async addPaymasterSignature(userOp: UserOperation): Promise<string> {
-  //     console.log('🔏 Adding paymaster signature...');
-
-  //     const validUntil = Math.floor(Date.now() / 1000) + 600; // 10 minutes
-  //     const validAfter = 0;
-
-  //     // Create hash to sign
-  //     const abiCoder = AbiCoder.defaultAbiCoder();
-  //     const hash = ethers.keccak256(
-  //         abiCoder.encode(
-  //             ['address', 'uint256', 'uint256', 'uint256', 'uint256', 'uint256', 'uint256', 'uint256', 'address', 'uint48', 'uint48'],
-  //             [
-  //                 userOp.sender,
-  //                 userOp.nonce,
-  //                 userOp.callGasLimit,
-  //                 userOp.verificationGasLimit,
-  //                 userOp.preVerificationGas,
-  //                 userOp.maxFeePerGas,
-  //                 userOp.maxPriorityFeePerGas,
-  //                 this.chainId,
-  //                 this.paymasterAddress,
-  //                 validUntil,
-  //                 validAfter
-  //             ]
-  //         )
-  //     );
-
-  //     // Sign with paymaster signer
-  //     const signature = await this.paymasterSigner.signMessage(
-  //         ethers.getBytes(hash)
-  //     );
-  //     // Pack paymasterAndData
-  //     const paymasterAndData = ethers.concat([
-  //         this.paymasterAddress,
-  //         abiCoder.encode(['uint48', 'uint48'], [validUntil, validAfter]),
-  //         signature
-  //     ]);
-
-  //     console.log('   ✅ Gas sponsored!');
-  //     return paymasterAndData;
-  // }
 
   async addPaymasterSignature(userOp: UserOperation): Promise<string> {
     console.log("🔏 Adding paymaster signature (v0.7 format)...");
@@ -741,12 +361,316 @@ export class AAService {
     return paymasterAndData;
   }
 
+  // async addPaymasterSignatureV7(
+  //   userOp: UserOperation // Must be PackedUserOperation format!
+  // ): Promise<string> {
+  //   console.log("🔏 Adding paymaster signature (v0.7 format)...");
+
+  //   const validUntil = Math.floor(Date.now() / 1000) + 600; // 10 mins
+  //   const validAfter = 0;
+
+  //   // 1. Unpack gas limits and fees from the packed UserOp
+  //   const { verificationGasLimit, callGasLimit } = unpackAccountGasLimits(
+  //     userOp.accountGasLimits
+  //   );
+  //   const { maxPriorityFeePerGas, maxFeePerGas } = unpackGasFees(
+  //     userOp.gasFees
+  //   );
+
+  //   // 2. Get chainId
+  //   const network = await this.provider.getNetwork();
+  //   const chainId = network.chainId;
+
+  //   // 3. Create the SAME hash that the contract expects
+  //   // This MUST match your contract's getHash() function exactly!
+  //   const abiCoder = ethers.AbiCoder.defaultAbiCoder();
+  //   const paymasterHash = ethers.keccak256(
+  //     abiCoder.encode(
+  //       [
+  //         "address", // sender
+  //         "uint256", // nonce
+  //         "uint256", // callGasLimit (unpacked)
+  //         "uint256", // verificationGasLimit (unpacked)
+  //         "uint256", // preVerificationGas
+  //         "uint256", // maxFeePerGas (unpacked)
+  //         "uint256", // maxPriorityFeePerGas (unpacked)
+  //         "uint256", // chainId
+  //         "address", // paymaster address
+  //         "uint48", // validUntil
+  //         "uint48", // validAfter
+  //       ],
+  //       [
+  //         userOp.sender,
+  //         userOp.nonce,
+  //         callGasLimit,
+  //         verificationGasLimit,
+  //         userOp.preVerificationGas,
+  //         maxFeePerGas,
+  //         maxPriorityFeePerGas,
+  //         chainId,
+  //         this.paymasterAddress,
+  //         validUntil,
+  //         validAfter,
+  //       ]
+  //     )
+  //   );
+
+  //   console.log("   Paymaster Hash:", paymasterHash);
+  //   console.log("   Parameters used:");
+  //   console.log("     Sender:", userOp.sender);
+  //   console.log("     Nonce:", userOp.nonce);
+  //   console.log("     CallGasLimit:", callGasLimit.toString());
+  //   console.log("     VerificationGasLimit:", verificationGasLimit.toString());
+  //   console.log("     PreVerificationGas:", userOp.preVerificationGas);
+  //   console.log("     MaxFeePerGas:", maxFeePerGas.toString());
+  //   console.log("     MaxPriorityFeePerGas:", maxPriorityFeePerGas.toString());
+  //   console.log("     ChainId:", chainId.toString());
+  //   console.log("     Paymaster:", this.paymasterAddress);
+  //   console.log("     ValidUntil:", validUntil);
+  //   console.log("     ValidAfter:", validAfter);
+
+  //   // 4. Sign with Ethereum signed message prefix
+  //   const signature = await this.paymasterSigner.signMessage(
+  //     ethers.getBytes(paymasterHash)
+  //   );
+
+  //   console.log("   Signature:", signature);
+
+  //   // 5. Pack paymasterData (NOT including paymaster address)
+  //   // Format: [64 bytes: validUntil + validAfter encoded][65 bytes: signature]
+  //   const paymasterData = ethers.concat([
+  //     abiCoder.encode(["uint48", "uint48"], [validUntil, validAfter]),
+  //     signature,
+  //   ]);
+
+  //   console.log("✅ Paymaster data created");
+  //   console.log("   Length:", (paymasterData.length - 2) / 2, "bytes");
+  //   console.log("   PaymasterData:", paymasterData);
+
+  //   return paymasterData;
+  // }
+
+  async addPaymasterSignatureV7(userOp: UserOperation): Promise<string> {
+    console.log("\n🔏 Adding paymaster signature (v0.7 format)...");
+
+    const validUntil = Math.floor(Date.now() / 1000) + 600; // 10 mins
+    const validAfter = 0;
+
+    console.log("Timing:");
+    console.log("  ValidUntil:", validUntil);
+    console.log("  ValidAfter:", validAfter);
+
+    // CRITICAL: Calculate the ACTUAL UserOpHash from EntryPoint
+    // This is the hash that includes ALL UserOp fields
+    const entryPoint = new ethers.Contract(
+        this.entryPointAddress,
+        EntryPointABI,
+        this.provider
+    );
+    
+    const userOpHash = await entryPoint.getUserOpHash(userOp);
+    console.log("  UserOpHash from EntryPoint:", userOpHash);
+
+    // Now create the paymaster hash according to ERC-4337 v0.7
+    // This should match what your paymaster contract expects
+    const abiCoder = ethers.AbiCoder.defaultAbiCoder();
+    
+    // The paymaster signs over: keccak256(abi.encode(userOpHash, validUntil, validAfter))
+    const paymasterHash = ethers.keccak256(
+        abiCoder.encode(
+            ["bytes32", "uint48", "uint48"],
+            [userOpHash, validUntil, validAfter]
+        )
+    );
+
+    console.log("  Paymaster Hash:", paymasterHash);
+
+    // Sign with Ethereum signed message prefix
+    const signature = await this.paymasterSigner.signMessage(
+        ethers.getBytes(paymasterHash)
+    );
+
+    console.log("  Signature:", signature);
+    console.log("  Signer address:", await this.paymasterSigner.getAddress());
+
+    // Verify signature locally
+    const ethSignedHash = ethers.hashMessage(ethers.getBytes(paymasterHash));
+    const recoveredAddress = ethers.recoverAddress(ethSignedHash, signature);
+    console.log("  Recovered address:", recoveredAddress);
+    console.log("  Signature valid:", recoveredAddress.toLowerCase() === (await this.paymasterSigner.getAddress()).toLowerCase() ? "✅ YES" : "❌ NO");
+
+    // Pack paymasterData: [validUntil + validAfter (64 bytes)][signature (65 bytes)]
+    const paymasterData = ethers.concat([
+        abiCoder.encode(["uint48", "uint48"], [validUntil, validAfter]),
+        signature,
+    ]);
+
+    console.log("\n✅ PaymasterData created");
+    console.log("   Length:", (paymasterData.length - 2) / 2, "bytes");
+    console.log("   Expected: 64 (encoded times) + 65 (signature) = 129 bytes");
+
+    return paymasterData;
+}
+
+  async testPaymasterSignature(packedUserOp: UserOperation, paymasterData: string) {
+    console.log("\n🧪 Testing Paymaster Signature On-Chain...");
+
+    const paymaster = new ethers.Contract(
+        this.paymasterAddress,
+        PayMasterABI,
+        this.provider
+    );
+
+    // Parse paymasterData
+    const abiCoder = ethers.AbiCoder.defaultAbiCoder();
+    const validUntil = Math.floor(Date.now() / 1000) + 600;
+    const validAfter = 0;
+    
+    const paymasterDataHex = paymasterData.slice(2);
+    const signature = "0x" + paymasterDataHex.slice(128); // Skip 64 bytes of encoded times
+
+    console.log("Parsed:");
+    console.log("  ValidUntil:", validUntil);
+    console.log("  ValidAfter:", validAfter);
+    console.log("  Signature:", signature);
+
+    try {
+        const [isValid, recoveredSigner] = await paymaster.testSignature(
+            packedUserOp,
+            validUntil,
+            validAfter,
+            signature
+        );
+
+        const expectedSigner = await paymaster.verifyingSigner();
+
+        console.log("\nOn-Chain Test Results:");
+        console.log("  Signature valid:", isValid ? "✅ YES" : "❌ NO");
+        console.log("  Recovered signer:", recoveredSigner);
+        console.log("  Expected signer:", expectedSigner);
+        console.log("  Match:", recoveredSigner.toLowerCase() === expectedSigner.toLowerCase() ? "✅ YES" : "❌ NO");
+
+        if (!isValid) {
+            console.error("\n❌ SIGNATURE VERIFICATION FAILED ON-CHAIN!");
+        }
+    } catch (error: any) {
+        console.error("\n❌ testSignature call failed:", error.message);
+    }
+  }
+
+  async verifyUserOpHash(packedUserOp: UserOperation, expectedOwner: string) {
+    // 🔍 DEBUG: Log what we're hashing on backend
+    console.log("\n🔍 DEBUG - Backend UserOp for Hashing:");
+    console.log("  Format check:");
+    console.log("    Has accountGasLimits:", "accountGasLimits" in packedUserOp);
+    console.log("    Has callGasLimit:", "callGasLimit" in packedUserOp);
+    console.log("\n  Values:");
+    console.log("    sender:", packedUserOp.sender);
+    console.log("    nonce:", packedUserOp.nonce);
+    console.log("    initCode:", packedUserOp.initCode);
+    console.log("    callData:", packedUserOp.callData.slice(0, 50) + "...");
+    console.log("    accountGasLimits:", packedUserOp.accountGasLimits);
+    console.log("    preVerificationGas:", packedUserOp.preVerificationGas);
+    console.log("    gasFees:", packedUserOp.gasFees);
+    console.log("    paymasterAndData:", packedUserOp.paymasterAndData);
+
+    
+    const entryPoint = new ethers.Contract(
+        this.entryPointAddress,
+        EntryPointABI,
+        this.provider
+    );
+
+    // Calculate hash on backend
+    const backendHash = await entryPoint.getUserOpHash(packedUserOp);
+    
+    console.log("\n🔍 UserOpHash Verification:");
+    console.log("  Backend calculated hash:", backendHash);
+    
+    // Check if account is deployed
+    const accountCode = await this.provider.getCode(packedUserOp.sender);
+    const isDeployed = accountCode !== "0x";
+    
+    console.log("  Account deployed:", isDeployed ? "YES ✅" : "NO (will deploy) ⏳");
+    
+    // Verify the signature
+    const ethSignedHash = ethers.hashMessage(ethers.getBytes(backendHash));
+    
+    try {
+        const recoveredAddress = ethers.recoverAddress(ethSignedHash, packedUserOp.signature);
+        
+        console.log("  Recovered signer:", recoveredAddress);
+        console.log("  Expected owner:", expectedOwner);
+        
+        let actualOwner = expectedOwner;
+        
+        if (isDeployed) {
+            // Account exists - verify owner on-chain
+            const account = new ethers.Contract(
+                packedUserOp.sender,
+                ["function owner() view returns (address)"],
+                this.provider
+            );
+            
+            try {
+                actualOwner = await account.owner();
+                console.log("  Actual owner (on-chain):", actualOwner);
+            } catch (error) {
+                console.log("  ⚠️  Could not read owner from contract, using expected owner");
+            }
+        } else {
+            console.log("  Expected owner (from DB):", expectedOwner);
+            console.log("  ⏳ Account will be deployed with initCode");
+        }
+        
+        const isValid = recoveredAddress.toLowerCase() === actualOwner.toLowerCase();
+        console.log("  Signature valid:", isValid ? "✅ YES" : "❌ NO");
+        
+        if (!isValid) {
+            throw new Error(
+                `Invalid signature!\n` +
+                `  Expected: ${actualOwner}\n` +
+                `  Got: ${recoveredAddress}`
+            );
+        }
+        
+        return true;
+    } catch (error: any) {
+        console.error("❌ Signature recovery failed:", error.message);
+        throw error;
+    }
+}
+
   /**
    * Submit UserOperation to bundler
    */
-  async submitUserOperation(userOp: UserOperation): Promise<string> {
+  async submitUserOperation(userOp: AlchemyUserOperationV7): Promise<string> {
     return await this.bundler.sendUserOperation(userOp);
   }
+
+  async checkPaymasterDepositDetailed() {
+    const entryPoint = new ethers.Contract(
+        this.entryPointAddress,
+        ["function balanceOf(address) view returns (uint256)"],
+        this.provider
+    );
+
+    const paymaster = new ethers.Contract(
+        this.paymasterAddress,
+        ["function paymasterDeposit() view returns (uint256)"],
+        this.provider
+    );
+
+    const entryPointBalance = await entryPoint.balanceOf(this.paymasterAddress);
+    const paymasterViewBalance = await paymaster.paymasterDeposit();
+
+    console.log("\n💰 Paymaster Deposit Check:");
+    console.log("  EntryPoint.balanceOf(paymaster):", ethers.formatEther(entryPointBalance), "ETH");
+    console.log("  paymaster.paymasterDeposit():", ethers.formatEther(paymasterViewBalance), "ETH");
+    console.log("  Match:", entryPointBalance === paymasterViewBalance ? "✅" : "❌");
+
+    return entryPointBalance;
+}
 
   /**
    * Wait for transaction confirmation
@@ -821,4 +745,11 @@ export class AAService {
 
     return JSON.parse(decrypted);
   }
+
+
+  // In your submitTransaction controller, after receiving the UserOp:
+
+
+
+
 }

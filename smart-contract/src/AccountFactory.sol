@@ -56,7 +56,8 @@ contract AccountFactory {
                         abi.encodeCall(SmartUserAccount.initialize, (owner))    
                     )
                 )
-            )
+            ),
+            address(this)
         );
     }
 }

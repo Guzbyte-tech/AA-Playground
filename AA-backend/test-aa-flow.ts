@@ -1,10 +1,13 @@
+import { EntryPointABI } from './src/abis/EntryPointABI';
 import  FactoryABI  from "./src/abis/FactoryABI.json";
-import { AbiCoder, Contract, ethers, HDNodeWallet, Wallet } from "ethers";
+import { AbiCoder, ethers, HDNodeWallet, Wallet } from "ethers";
 import axios from "axios";
 import chalk from "chalk";
 import dotenv from "dotenv";
 import ERC1967ProxyBytecode from "./src/abis/ERC1967ProxyBytecode";
 import crypto from "crypto";
+import fs from 'fs';
+import path from "path";
 
 
 dotenv.config();
@@ -21,20 +24,104 @@ const config = {
   provider: new ethers.JsonRpcProvider(process.env.SEPOLIA_RPC_URL!),
 };
 
+interface PackedUserOperation {
+  sender: string;
+  nonce: string;
+  initCode: string;
+  callData: string;
+  accountGasLimits: string; // bytes32
+  preVerificationGas: string;
+  gasFees: string; // bytes32
+  paymasterAndData: string;
+  signature: string;
+}
+
+export interface UserOperation {
+    sender: string;
+    nonce: string;
+    initCode: string;
+    callData: string;
+
+    // Packed fields (bytes32)
+    accountGasLimits: string; // = (verificationGasLimit << 128) | callGasLimit
+    preVerificationGas: string;
+    gasFees: string; // = (maxPriorityFeePerGas << 128) | maxFeePerGas
+
+    paymasterAndData: string;
+    signature: string;
+}
+
+export interface AlchemyUserOperationV7 {
+  sender: string;
+  nonce: string;
+  initCode?: string;
+  callData: string;
+  callGasLimit: string;
+  verificationGasLimit: string;
+  preVerificationGas: string;
+  maxFeePerGas: string;
+  maxPriorityFeePerGas: string;
+  signature: string;
+  factory?: string; // Only if account needs deployment
+  factoryData?: string; // Only if account needs deployment
+  paymaster?: string; // Only if using paymaster
+  paymasterData?: string;
+  paymasterVerificationGasLimit?: string;
+  paymasterPostOpGasLimit?: string;
+}
+
 // ============================================
 // 1. DEVICE KEY SIMULATION (Simulates Mobile)
 // ============================================
 
 class DeviceKeyManager {
   // private wallet: ethers.Wallet;
-  private wallet: HDNodeWallet;
+  private wallet: Wallet | HDNodeWallet;
+  private keystorePath: string;
 
-  constructor() {
+
+  constructor(username?: string) {
+    this.keystorePath = path.join(__dirname, '.keys', `${username || 'default'}.json`);
+
+
+    // Try to load existing key
+    if (fs.existsSync(this.keystorePath)) {
+      console.log(chalk.blue("\n📱 Loading Existing Device Key"));
+      const keyData = JSON.parse(fs.readFileSync(this.keystorePath, 'utf8'));
+      this.wallet = new ethers.Wallet(keyData.privateKey);
+      console.log("Public Key:", chalk.green(this.wallet.address));
+    } else {
+      // Generate new key
+      console.log(chalk.blue("\n📱 Generating New Device Key"));
+      this.wallet = Wallet.createRandom();
+      console.log("Private Key:", chalk.gray(this.wallet.privateKey));
+      console.log("Public Key:", chalk.green(this.wallet.address));
+      
+      // Save key
+      this.saveKey();
+    }
+
     // In real app, this is generated in device secure enclave
-    this.wallet = Wallet.createRandom();
-    console.log(chalk.blue("\n📱 Device Key Generated"));
-    console.log("Private Key:", chalk.gray(this.wallet.privateKey));
-    console.log("Public Key:", chalk.green(this.wallet.address));
+    // this.wallet = Wallet.createRandom();
+    // console.log(chalk.blue("\n📱 Device Key Generated"));
+    // console.log("Private Key:", chalk.gray(this.wallet.privateKey));
+    // console.log("Public Key:", chalk.green(this.wallet.address));
+  }
+
+  private saveKey() {
+    const keyData = {
+      privateKey: this.wallet.privateKey,
+      address: this.wallet.address
+    };
+    
+    // Create .keys directory if it doesn't exist
+    const dir = path.dirname(this.keystorePath);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    
+    fs.writeFileSync(this.keystorePath, JSON.stringify(keyData, null, 2));
+    console.log(chalk.gray("   Key saved to:", this.keystorePath));
   }
 
   // This is also the wallet Address
@@ -46,13 +133,14 @@ class DeviceKeyManager {
     const signature = await this.wallet.signMessage(
       ethers.getBytes(userOpHash)
     );
+    
     console.log(chalk.blue("\n🔏 Signed UserOp"));
     console.log("   Signature:", chalk.gray(signature.slice(0, 20) + "..."));
     return signature;
   }
 
   // Return full wallet instance including private key
-  getWallet(): HDNodeWallet {
+  getWallet(): Wallet | HDNodeWallet {
     return this.wallet;
   }
 }
@@ -64,11 +152,11 @@ class DeviceKeyManager {
 class AAClient {
   private baseUrl: string;
   private token: string | null = null;
-  private deviceKey: DeviceKeyManager;
+  private deviceKey: DeviceKeyManager | null = null;
+  private username: string | null = null;
 
   constructor(baseUrl: string) {
     this.baseUrl = baseUrl;
-    this.deviceKey = new DeviceKeyManager();
   }
 
   private async request(method: string, endpoint: string, data?: any) {
@@ -101,6 +189,8 @@ class AAClient {
       console.log("   Email:", email);
 
       // Device generates everything locally
+      this.username = username;
+      this.deviceKey = new DeviceKeyManager(username);
       const ownerWalletAddress = this.deviceKey.getPublicKey();
       // const salt = Math.floor(Math.random() * 1000000);
       // const { predictedAddress, salt, salt_BigInt } = await predictSmartAccountAddress(config.provider, config.factory, ownerWalletAddress);
@@ -154,6 +244,9 @@ class AAClient {
   async login(username: string, password: string) {
     console.log(chalk.yellow("\n🔐 Logging In..."));
 
+    this.username = username;
+    this.deviceKey = new DeviceKeyManager(username);
+
     const response = await this.request("POST", "/api/auth/login", {
       username,
       password,
@@ -181,7 +274,10 @@ class AAClient {
   }
 
   // Build UserOp for transaction
-  async buildUserOp(to: string, amount: string) {
+  async buildUserOp(to: string, amount: string): Promise<{
+    packedUserOp: UserOperation;
+    alchemyUserOp : AlchemyUserOperationV7;
+  }> {
     console.log(chalk.yellow("\n🔨 Building UserOperation..."));
     console.log("   To:", to);
     console.log("   Amount:", amount);
@@ -192,47 +288,56 @@ class AAClient {
     });
 
     console.log(chalk.green("✅ UserOp Built"));
-    return response.data.userOp;
+    console.log("BUILDD", response.data);
+    return {
+      packedUserOp: response.data.packedUserOp,    // Changed from response.data.userOp
+      alchemyUserOp: response.data.alchemyUserOp 
+    }
+    // return response.data.userOp;
   }
 
   // Sign and submit transaction
-  async sendTransaction(to: string, amount: string) {
+ async sendTransaction(to: string, amount: string) {
+    if (!this.deviceKey) {
+        throw new Error("Device key not initialized. Please login first.");
+    }
     console.log(chalk.yellow("\n💸 Sending Transaction..."));
 
-    // Step 1: Build UserOp
-    const userOp = await this.buildUserOp(to, amount);
-
-    // Step 2: Calculate UserOp hash
-    const userOpHash = this.calculateUserOpHash(userOp);
+    // Step 1: Build UserOp (backend adds paymaster)
+    const { packedUserOp, alchemyUserOp } = await this.buildUserOp(to, amount);
+    
+    // Step 2: Calculate hash (includes paymaster now!)
+    const userOpHash = await this.calculateUserOpHashFromContract(packedUserOp);
     console.log("   UserOp Hash:", chalk.gray(userOpHash));
 
-    // Step 3: Sign with device key
+    // Step 3: Sign
     const signature = await this.deviceKey.signUserOp(userOpHash);
-    userOp.signature = signature;
+    
+    // Add signature to both
+    packedUserOp.signature = signature;
+    alchemyUserOp.signature = signature;
 
-    // Step 4: Submit to backend
+    // Step 4: Submit
     console.log(chalk.yellow("\n📤 Submitting to Backend..."));
     const response = await this.request("POST", "/api/transactions/submit", {
-      userOp,
+        packedUserOp: packedUserOp,
+        alchemyUserOp: alchemyUserOp
     });
 
     console.log(chalk.green("✅ Transaction Submitted"));
-    console.log("   UserOpHash:", response.data.userOpHash);
-    console.log("   Status:", response.data.status);
-
     return response.data;
-  }
+}
 
   // Sign and submit transaction
   async buildUserOperation(to: string, amount: string) {
     console.log(chalk.yellow("\n💸 Sending Transaction..."));
 
     // Step 1: Build UserOp
-    const userOp = await this.buildUserOp(to, amount);
+    const {packedUserOp, alchemyUserOp} = await this.buildUserOp(to, amount);
 
    
 
-    return userOp;
+    return packedUserOp;
   }
   // Get transaction status
   async getTransactionStatus(userOpHash: string) {
@@ -259,48 +364,18 @@ class AAClient {
     return response.data;
   }
 
-  // Calculate UserOp hash (client-side)
-  private calculateUserOpHash(userOp: any): string {
-    const provider = new ethers.JsonRpcProvider(config.rpcUrl);
-
-    const abiCoder = AbiCoder.defaultAbiCoder();
-
-    const packed = ethers.keccak256(
-      abiCoder.encode(
-        [
-          "address",
-          "uint256",
-          "bytes32",
-          "bytes32",
-          "uint256",
-          "uint256",
-          "uint256",
-          "uint256",
-          "uint256",
-          "bytes32",
-        ],
-        [
-          userOp.sender,
-          userOp.nonce,
-          ethers.keccak256(userOp.initCode),
-          ethers.keccak256(userOp.callData),
-          userOp.callGasLimit,
-          userOp.verificationGasLimit,
-          userOp.preVerificationGas,
-          userOp.maxFeePerGas,
-          userOp.maxPriorityFeePerGas,
-          ethers.keccak256(userOp.paymasterAndData || "0x"),
-        ]
-      )
+private async calculateUserOpHashFromContract(
+    userOp: UserOperation
+  ): Promise<string> {
+    const entryPoint = new ethers.Contract(
+      config.entryPoint,
+      EntryPointABI,
+      config.provider
     );
 
-    return ethers.keccak256(
-      abiCoder.encode(
-        ["bytes32", "address", "uint256"],
-        [packed, config.entryPoint, config.chainId]
-      )
-    );
-  }
+    const userOpHash = await entryPoint.getUserOpHash(userOp);
+    return userOpHash;
+}
 
   // Wait for transaction confirmation
   async waitForConfirmation(userOpHash: string, timeout: number = 60000) {
@@ -478,7 +553,7 @@ async function testTransaction() {
 //       'TestPassword123!'
 //   );
   
-    await client.login("test_1763161258489", "TestPassword123!");
+    await client.login("test_1763417219003", "TestPassword123!");
 
   // Send transaction
   const result = await client.sendTransaction(
@@ -502,7 +577,7 @@ async function testBuildUserOperation() {
     //     "test@example.com",
     //     "TestPassword123!"
     // );
-    await client.login("test_1763161258489", "TestPassword123!");
+    await client.login("test_1763417219003", "TestPassword123!");
 
     const result = await client.buildUserOperation(
         // '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb1',
@@ -576,10 +651,6 @@ export async function predictSmartAccountAddress(
   // 3️⃣ Encode initialize calldata
   const iface = new ethers.Interface(["function initialize(address owner)"]);
   const proxyInitData = iface.encodeFunctionData("initialize", [owner]);
-
-  // // 4️⃣ ERC1967Proxy bytecode (hardcoded or from compiled artifact)
-  // const ERC1967ProxyBytecode =
-  //   "0x608060405261029d8038038061001481610168565b92833981016040828203126101645781516001600160a01b03811692909190838303610164576020810151906001600160401b03821161016457019281601f8501121561016457835161006e610069826101a1565b610168565b9481865260208601936020838301011161016457815f926020809301865e86010152823b15610152577f360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc80546001600160a01b031916821790557fbc7cd75a20ee27fd9adebab32041f755214dbc6bffa90cc0225b39da2e5c2d3b5f80a282511561013a575f8091610122945190845af43d15610132573d91610113610069846101a1565b9283523d5f602085013e6101bc565b505b6040516082908161021b8239f35b6060916101bc565b50505034156101245763b398979f60e01b5f5260045ffd5b634c9c8ce360e01b5f5260045260245ffd5b5f80fd5b6040519190601f01601f191682016001600160401b0381118382101761018d57604052565b634e487b7160e01b5f52604160045260245ffd5b6001600160401b03811161018d57601f01601f191660200190565b906101e057508051156101d157805190602001fd5b63d6bda27560e01b5f5260045ffd5b81511580610211575b6101f1575090565b639996b31560e01b5f9081526001600160a01b0391909116600452602490fd5b50803b156101e956fe60806040527f360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc545f9081906001600160a01b0316368280378136915af43d5f803e156048573d5ff35b3d5ffdfea26469706673582212203d5f7c2fec6b8fd34ebd86e95761dd5d04b25456e0f1a87e2223212a86763f4364736f6c634300081c0033";
 
   // 5️⃣ Construct full CREATE2 init code
   const bytecode = ethers.concat([

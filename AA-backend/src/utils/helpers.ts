@@ -1,6 +1,6 @@
 import { ValidationError } from "class-validator";
 import { IValidationFormatResult } from "../interfaces/IValidateErrorFormat";
-import { UserOperation } from "../services/BundlerService";
+import { AlchemyUserOperationV7, UserOperation } from "../services/BundlerService";
 import { ethers } from "ethers";
 import { randomBytes } from "crypto";
 import FactoryABI from "../abis/FactoryABI.json";
@@ -151,4 +151,167 @@ export function hexToBigInt(hexString: string): BigInt {
     console.error("Invalid hex string provided:", error);
     throw new Error("Failed to convert hex string to BigInt.");
   }
+}
+
+export function unpackAccountGasLimits(accountGasLimits: string): {
+  verificationGasLimit: bigint;
+  callGasLimit: bigint;
+} {
+  const hex = accountGasLimits.slice(2); // Remove 0x
+  const verificationGasLimitHex = hex.slice(0, 32); // First 16 bytes
+  const callGasLimitHex = hex.slice(32, 64); // Last 16 bytes
+
+  return {
+    verificationGasLimit: BigInt("0x" + verificationGasLimitHex),
+    callGasLimit: BigInt("0x" + callGasLimitHex),
+  };
+}
+
+export function unpackGasFees(gasFees: string): {
+  maxPriorityFeePerGas: bigint;
+  maxFeePerGas: bigint;
+} {
+  const hex = gasFees.slice(2); // Remove 0x
+  const maxPriorityFeePerGasHex = hex.slice(0, 32); // First 16 bytes
+  const maxFeePerGasHex = hex.slice(32, 64); // Last 16 bytes
+
+  return {
+    maxPriorityFeePerGas: BigInt("0x" + maxPriorityFeePerGasHex),
+    maxFeePerGas: BigInt("0x" + maxFeePerGasHex),
+  };
+}
+
+// ========================================
+// BACKEND: Helper - Extract To Address
+// ========================================
+
+export function extractToAddress(callData: string): string {
+    try {
+        // callData format: execute(address dest, uint256 value, bytes data)
+        const iface = new ethers.Interface([
+            "function execute(address,uint256,bytes)"
+        ]);
+        const decoded = iface.decodeFunctionData("execute", callData);
+        console.log("decoded: ", decoded);
+        return decoded[0]; // dest address
+    } catch {
+        return "0x0000000000000000000000000000000000000000";
+    }
+}
+
+// ========================================
+// BACKEND: Helper - Extract Amount
+// ========================================
+
+export function extractAmount(callData: string): string {
+    try {
+        // Decode execute() to get the inner transfer() call
+        const executeIface = new ethers.Interface([
+            "function execute(address,uint256,bytes)"
+        ]);
+        const decoded = executeIface.decodeFunctionData("execute", callData);
+        const innerCallData = decoded[2]; // bytes data
+        
+        // Decode transfer() from innerCallData
+        const transferIface = new ethers.Interface([
+            "function transfer(address,uint256)"
+        ]);
+        const transferDecoded = transferIface.decodeFunctionData("transfer", innerCallData);
+        return ethers.formatUnits(transferDecoded[1], 18); // amount
+    } catch {
+        return "0";
+    }
+}
+
+
+/**
+ * Convert PackedUserOperation back to Alchemy v0.7 unpacked format
+ * This is useful when you need to submit to Alchemy bundler after modifying packed format
+ */
+export function convertToAlchemy(packedUserOp: UserOperation): AlchemyUserOperationV7 {
+    // Unpack accountGasLimits (32 bytes = 64 hex chars after 0x)
+    // Format: [16 bytes verificationGasLimit][16 bytes callGasLimit]
+    const accountGasLimitsHex = packedUserOp.accountGasLimits.slice(2); // Remove 0x
+    
+    // CRITICAL: Read ONLY 32 hex chars (16 bytes) for each value
+    const verificationGasLimitHex = accountGasLimitsHex.slice(0, 32); // First 16 bytes
+    const callGasLimitHex = accountGasLimitsHex.slice(32, 64);        // Last 16 bytes
+    
+    const verificationGasLimit = BigInt("0x" + verificationGasLimitHex);
+    const callGasLimit = BigInt("0x" + callGasLimitHex);
+
+    // Unpack gasFees (32 bytes = 64 hex chars after 0x)
+    // Format: [16 bytes maxPriorityFeePerGas][16 bytes maxFeePerGas]
+    const gasFeesHex = packedUserOp.gasFees.slice(2); // Remove 0x
+    
+    const maxPriorityFeePerGasHex = gasFeesHex.slice(0, 32); // First 16 bytes
+    const maxFeePerGasHex = gasFeesHex.slice(32, 64);        // Last 16 bytes
+    
+    const maxPriorityFeePerGas = BigInt("0x" + maxPriorityFeePerGasHex);
+    const maxFeePerGas = BigInt("0x" + maxFeePerGasHex);
+
+    console.log("\n🔍 Unpacked Gas Values:");
+    console.log("  Verification Gas Limit:", verificationGasLimit.toString(), "=", ethers.toBeHex(verificationGasLimit));
+    console.log("  Call Gas Limit:", callGasLimit.toString(), "=", ethers.toBeHex(callGasLimit));
+    console.log("  Max Priority Fee:", maxPriorityFeePerGas.toString(), "=", ethers.toBeHex(maxPriorityFeePerGas));
+    console.log("  Max Fee Per Gas:", maxFeePerGas.toString(), "=", ethers.toBeHex(maxFeePerGas));
+
+    // Unpack initCode
+    let factory: string | undefined = undefined;
+    let factoryData: string | undefined = undefined;
+    if (packedUserOp.initCode && packedUserOp.initCode !== "0x") {
+        factory = "0x" + packedUserOp.initCode.slice(2, 42); // 20 bytes = 40 hex chars
+        factoryData = "0x" + packedUserOp.initCode.slice(42);
+    }
+
+    // Unpack paymasterAndData
+    let paymaster: string | undefined = undefined;
+    let paymasterVerificationGasLimit: string | undefined = undefined;
+    let paymasterPostOpGasLimit: string | undefined = undefined;
+    let paymasterData: string | undefined = undefined;
+
+    if (packedUserOp.paymasterAndData && packedUserOp.paymasterAndData !== "0x") {
+        const paymasterHex = packedUserOp.paymasterAndData.slice(2);
+        
+        // [20 bytes paymaster][16 bytes verGas][16 bytes postGas][rest]
+        paymaster = "0x" + paymasterHex.slice(0, 40); // 20 bytes
+        
+        const pmVerGasHex = paymasterHex.slice(40, 72);  // 16 bytes = 32 hex chars
+        const pmPostGasHex = paymasterHex.slice(72, 104); // 16 bytes = 32 hex chars
+        
+        paymasterVerificationGasLimit = ethers.toBeHex(BigInt("0x" + pmVerGasHex));
+        paymasterPostOpGasLimit = ethers.toBeHex(BigInt("0x" + pmPostGasHex));
+        
+        if (paymasterHex.length > 104) {
+            paymasterData = "0x" + paymasterHex.slice(104);
+        }
+    }
+
+    // Build Alchemy UserOp
+    const alchemyUserOp: any = {
+        sender: packedUserOp.sender,
+        nonce: packedUserOp.nonce,
+        callData: packedUserOp.callData,
+        callGasLimit: ethers.toBeHex(callGasLimit),
+        verificationGasLimit: ethers.toBeHex(verificationGasLimit),
+        preVerificationGas: packedUserOp.preVerificationGas,
+        maxFeePerGas: ethers.toBeHex(maxFeePerGas),
+        maxPriorityFeePerGas: ethers.toBeHex(maxPriorityFeePerGas),
+        signature: packedUserOp.signature,
+    };
+
+    // Add optional fields
+    if (factory && factory !== "0x") {
+        alchemyUserOp.factory = factory;
+        alchemyUserOp.factoryData = factoryData;
+    }
+
+    if (paymaster && paymaster !== "0x") {
+        alchemyUserOp.paymaster = paymaster;
+        alchemyUserOp.paymasterVerificationGasLimit = paymasterVerificationGasLimit;
+        alchemyUserOp.paymasterPostOpGasLimit = paymasterPostOpGasLimit;
+        alchemyUserOp.paymasterData = paymasterData;
+    }
+
+    return alchemyUserOp;
 }
