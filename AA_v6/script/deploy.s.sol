@@ -9,6 +9,7 @@ import { AccountFactory } from "../src/AccountFactory.sol";
 import { SmartUserAccount } from "../src/SmartUserAccount.sol";
 // import { PayMaster } from "../src/PayMaster.sol";
 import { PayMaster } from "../src/Paymaster.sol";
+import { PayMasterV2 } from "../src/PayMasterV2.sol";
 
 import { IEntryPoint } from "@account-abstraction/interfaces/IEntryPoint.sol";
 
@@ -30,8 +31,11 @@ contract DeployScript is Script {
         // console2.log("AccountFactory: ", address(factory));
 
         // Deploy paymaster
-        PayMaster paymaster = new PayMaster(IEntryPoint(entryPoint), address(deployer));
-        console2.log("PayMaster: ", address(paymaster));
+        // PayMaster paymaster = new PayMaster(IEntryPoint(entryPoint), address(deployer));
+        // console2.log("PayMaster: ", address(paymaster));
+
+        PayMasterV2 paymaster = new PayMasterV2(IEntryPoint(entryPoint), address(deployer));
+        console2.log("PayMasterV2: ", address(paymaster));
 
         // Deploy SmartUserAccount
         // SmartUserAccount userAccount = new SmartUserAccount(IEntryPoint(entryPoint));

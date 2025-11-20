@@ -9,11 +9,21 @@ import { ErrorLib } from "./library/ErrorLib.sol";
 
 contract AccountFactory {
     SmartUserAccount public immutable ACCOUNT_IMPLEMENTATION;
+    IEntryPoint public immutable entryPoint;
+    address public immutable owner;
+
 
     address[] public smartAccounts;
 
     constructor(IEntryPoint _entryPoint) {
         ACCOUNT_IMPLEMENTATION = new SmartUserAccount(_entryPoint);
+        entryPoint = _entryPoint;
+        owner = msg.sender;
+    }
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Not factory owner");
+        _;
     }
 
     /**
@@ -59,5 +69,17 @@ contract AccountFactory {
             ),
             address(this)
         );
+    }
+
+    function stakeFactory(uint32 unstakeDelaySec) external payable onlyOwner {
+        IEntryPoint(entryPoint).addStake{value: msg.value}(unstakeDelaySec);
+    }
+
+    function unlockStake() external onlyOwner {
+        IEntryPoint(entryPoint).unlockStake();
+    }
+
+    function withdrawStake(address payable to) external onlyOwner {
+        IEntryPoint(entryPoint).withdrawStake(to);
     }
 }

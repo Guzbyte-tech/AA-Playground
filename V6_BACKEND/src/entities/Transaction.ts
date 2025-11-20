@@ -7,6 +7,7 @@ export enum TxStatus {
     FAILED = 'failed'
 }
 
+@Entity('transactions')
 export class Transaction {
     @PrimaryGeneratedColumn('uuid')
     id!: string;
@@ -29,8 +30,8 @@ export class Transaction {
     @Column({ nullable: true, name: 'tx_hash' })
     txHash!: string;
 
-    @Column({ nullable: true, name: 'block_number' })
-    blockNumber!: number;
+    @Column({ type: 'text', nullable: true, name: 'block_number' })
+    blockNumber!: string | null;
 
     @ManyToOne(() => User)
     user!: User;

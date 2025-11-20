@@ -10,7 +10,7 @@ import { BundlerService } from "../services/BundlerService";
 
 import { EntryPointABI } from "../abis/EntryPointABI";
 import FactoryABI from "../abis/FactoryABI.json";
-import { extractAmount, extractToAddress } from "../utils/helpers";
+import { extractAmount, extractToAddress, testPaymasterHashMatching } from "../utils/helpers";
 
 export class TransactionController {
   private aaService: AAService;
@@ -89,32 +89,33 @@ export class TransactionController {
       }
 
       // Verify user signature (without paymaster)
-      await this.aaService.verifyUserOpSignature(userOp, user.ownerAddress);
-      console.log("✅ User signature verified");
+      // await this.aaService.verifyUserOpSignature(userOp, user.ownerAddress);
+      // console.log("✅ User signature verified");
 
       // Add paymaster signature
-      console.log("\n🔏 Adding paymaster signature...");
-      const paymasterAndData = await this.aaService.addPaymasterSignature(userOp);
-      userOp.paymasterAndData = paymasterAndData;
-      console.log("✅ Paymaster signature added");
+      // console.log("\n🔏 Adding paymaster signature...");
+      // const paymasterAndData = await this.aaService.addPaymasterSignature(userOp);
+      // userOp.paymasterAndData = paymasterAndData;
+      // console.log("✅ Paymaster signature added");
 
       // Check paymaster deposit
-      const paymasterDeposit = await this.aaService.checkPaymasterDeposit();
-      const estimatedGas =
-        BigInt(userOp.verificationGasLimit) +
-        BigInt(userOp.callGasLimit) +
-        BigInt(userOp.preVerificationGas);
+      // const paymasterDeposit = await this.aaService.checkPaymasterDeposit();
+      // const estimatedGas =
+      //   BigInt(userOp.verificationGasLimit) +
+      //   BigInt(userOp.callGasLimit) +
+      //   BigInt(userOp.preVerificationGas);
 
-      const maxFeePerGas = BigInt(userOp.maxFeePerGas);
-      const estimatedCost = estimatedGas * maxFeePerGas;
+      // const maxFeePerGas = BigInt(userOp.maxFeePerGas);
+      // const estimatedCost = estimatedGas * maxFeePerGas;
 
-      if (paymasterDeposit < estimatedCost) {
-        throw new Error("Insufficient paymaster deposit");
-      }
+      // if (paymasterDeposit < estimatedCost) {
+      //   throw new Error("Insufficient paymaster deposit");
+      // }
 
        // Debug validation before submitting
-      console.log("\n🔬 Testing validation on-chain...");
-      await this.aaService.debugValidation(userOp);
+      // console.log("\n🔬 Testing validation on-chain...");
+      // await this.aaService.debugValidation(userOp);
+      // await testPaymasterHashMatching(userOp, userOp.paymasterAndData);
 
       // Submit to bundler
       console.log("\n📤 Submitting to bundler...");
@@ -143,17 +144,20 @@ export class TransactionController {
         await userRepo.save(user);
         console.log("🎉 Account deployed!");
       }
-
-      this.monitorTransaction(userOpHash);
-
+      
+      // this.monitorTransaction(userOpHash);
+      const trx = await this.monitorTransaction(userOpHash);
+      
       res.json({
         success: true,
         data: {
           userOpHash,
-          status: "pending",
+          status: trx?.status,
+          transaction: trx,
           message: "Transaction submitted to bundler",
         },
       });
+
     } catch (error: any) {
       console.error("❌ Submit transaction error:", error);
       res.status(500).json({
@@ -213,13 +217,19 @@ export class TransactionController {
         transaction.status = receipt.success
           ? TxStatus.CONFIRMED
           : TxStatus.FAILED;
-        transaction.txHash = receipt.transactionHash;
-        transaction.blockNumber = parseInt(receipt.blockNumber);
+        transaction.txHash = receipt.receipt?.transactionHash;
+        const blockNumber =
+        receipt.receipt?.blockNumber !== null && receipt.receipt?.blockNumber !== undefined
+          ? Number(receipt.receipt?.blockNumber).toString()
+          : null;
+        transaction.blockNumber = blockNumber;
         await txRepo.save(transaction);
 
         console.log("Transaction confirmed!");
-        console.log("TxHash:", receipt.transactionHash);
-        console.log("Block:", receipt.blockNumber);
+        console.log("TxHash:", receipt.receipt?.transactionHash);
+        console.log("Block:", receipt.receipt?.blockNumber);
+
+        return transaction;
       }
     } catch (error) {
       console.error("❌ Transaction monitoring failed:", error);

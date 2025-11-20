@@ -4,6 +4,8 @@ import {
   UserOperation,
   AlchemyUserOperationV7,
   UserOperationV6,
+  EstimateGasUserOperationV6,
+  requestAlchemyUserOperationV6,
 } from "./BundlerService";
 import crypto from "crypto";
 
@@ -34,20 +36,6 @@ export class AAService {
       this.provider
     );
     this.init();
-  }
-
-  private packAccountGasLimits(
-    verificationGasLimit: bigint,
-    callGasLimit: bigint
-  ): string {
-    return ethers.toBeHex((verificationGasLimit << 128n) | callGasLimit, 32);
-  }
-
-  private packGasFees(
-    maxPriorityFeePerGas: bigint,
-    maxFeePerGas: bigint
-  ): string {
-    return ethers.toBeHex((maxPriorityFeePerGas << 128n) | maxFeePerGas, 32);
   }
 
   async init() {
@@ -194,19 +182,31 @@ export class AAService {
     // 7. Build preliminary UserOp
     const dummySignature = "0x" + "00".repeat(65);
 
-    const preliminaryUserOp: UserOperationV6 = {
+    // const preliminaryUserOp: UserOperationV6 = {
+    //   sender: smartAccountAddress,
+    //   nonce: ethers.toBeHex(nonce),
+    //   initCode,
+    //   callData,
+    //   callGasLimit: ethers.toBeHex(callGasLimit),
+    //   verificationGasLimit: ethers.toBeHex(verificationGasLimit),
+    //   preVerificationGas: ethers.toBeHex(preVerificationGas),
+    //   maxFeePerGas: gasFees.maxFeePerGas,
+    //   maxPriorityFeePerGas: gasFees.maxPriorityFeePerGas,
+    //   paymasterAndData: "0x",
+    //   signature: dummySignature,
+    // };
+
+
+    const preliminaryUserOp: EstimateGasUserOperationV6 = {
       sender: smartAccountAddress,
       nonce: ethers.toBeHex(nonce),
       initCode,
       callData,
-      callGasLimit: ethers.toBeHex(callGasLimit),
-      verificationGasLimit: ethers.toBeHex(verificationGasLimit),
-      preVerificationGas: ethers.toBeHex(preVerificationGas),
-      maxFeePerGas: gasFees.maxFeePerGas,
-      maxPriorityFeePerGas: gasFees.maxPriorityFeePerGas,
       paymasterAndData: "0x",
       signature: dummySignature,
     };
+
+    
 
     console.log("   Preliminary UserOp:");
     console.log(JSON.stringify(preliminaryUserOp, null, 2));
@@ -232,14 +232,14 @@ export class AAService {
 
     let maxPFeePerGas = gasFees.maxPriorityFeePerGas;
     try {
-      const {maxPriorityFeePerGas} = await this.bundler.getMaxPriorityFeePerGas();
+      const { maxPriorityFeePerGas } = await this.bundler.getMaxPriorityFeePerGas();
       maxPFeePerGas = maxPriorityFeePerGas;
     } catch(error: any) {
       console.error("Gas est maxPriorityFeePerGas failed:", error);
     }
 
-    // 10. Return final UserOp
-    const userOp: UserOperationV6 = {
+    // Add payMasterAndData so users can then sign
+    const userOpPaymaster: UserOperationV6 = {
       sender: smartAccountAddress,
       nonce: ethers.toBeHex(nonce),
       initCode,
@@ -253,8 +253,52 @@ export class AAService {
       signature: "0x",
     };
 
+    const userOpPaymasterAlchemy: requestAlchemyUserOperationV6 = {
+      sender: smartAccountAddress,
+      nonce: ethers.toBeHex(nonce),
+      initCode,
+      callData,
+      callGasLimit: ethers.toBeHex(finalCallGas),
+      verificationGasLimit: ethers.toBeHex(finalVerificationGas),
+      preVerificationGas: ethers.toBeHex(finalPreVerificationGas),
+      maxFeePerGas: gasFees.maxFeePerGas,
+      maxPriorityFeePerGas: maxPFeePerGas
+    };
+
+
+    const paymasterAndData = await this.addPaymasterSignature(userOpPaymaster);
+
+    const paymasterAlchemyData = await this.getPayMasterAndData(userOpPaymasterAlchemy);
+
+    console.log("   Paymaster and Data from Alchemy:", paymasterAlchemyData);
+
+    // 10. Return final UserOp
+    const userOp: UserOperationV6 = {
+      sender: smartAccountAddress,
+      nonce: ethers.toBeHex(nonce),
+      initCode,
+      callData,
+      callGasLimit: paymasterAlchemyData.callGasLimit,
+      verificationGasLimit: paymasterAlchemyData.verificationGasLimit,
+      preVerificationGas: paymasterAlchemyData.preVerificationGas,
+      maxFeePerGas: paymasterAlchemyData.maxFeePerGas,
+      maxPriorityFeePerGas: paymasterAlchemyData.maxPriorityFeePerGas,
+      paymasterAndData: paymasterAlchemyData.paymasterAndData,
+      signature: "0x",
+    };
+
     console.log("   UserOp built successfully");
     return userOp;
+  }
+
+  async getPayMasterAndData(userOp: requestAlchemyUserOperationV6): Promise<any> {
+      console.log("🔏 Adding paymaster data from alchemy (v0.6 format)...");
+
+      const paymasterInfo = await this.bundler.requestGasAndPaymasterAndData(userOp);
+
+      console.log("   Paymaster info:", paymasterInfo);
+      return paymasterInfo;
+    
   }
 
   async addPaymasterSignature(userOp: UserOperationV6): Promise<string> {
@@ -353,10 +397,10 @@ export class AAService {
 
     // CRITICAL: User signed BEFORE paymaster was added
     // So we must calculate hash WITHOUT paymasterAndData
-    const userOpForHash = {
-      ...userOp,
-      paymasterAndData: "0x", // Remove paymaster for hash calculation
-    };
+    // const userOpForHash = {
+    //   ...userOp,
+    //   paymasterAndData: "0x", // Remove paymaster for hash calculation
+    // };
 
 
     const entryPoint = new ethers.Contract(
@@ -366,7 +410,7 @@ export class AAService {
     );
 
     // Calculate hash
-    const userOpHash = await entryPoint.getUserOpHash(userOpForHash);
+    const userOpHash = await entryPoint.getUserOpHash(userOp);
     console.log("  UserOpHash:", userOpHash);
 
     // Check if account is deployed
@@ -450,7 +494,10 @@ export class AAService {
     return await this.bundler.waitForUserOperationReceipt(userOpHash);
   }
 
-   async debugValidation(userOp: UserOperationV6) {
+  /**
+   * Debug UserOp validation on-chain
+   */
+  async debugValidation(userOp: UserOperationV6) {
     const entryPoint = new ethers.Contract(
       this.entryPointAddress,
       EntryPointABI,
@@ -469,47 +516,53 @@ export class AAService {
         console.log("✅ Validation PASSED (ValidationResult)");
         
         try {
-          // Parse the error data manually
-          const errorData = error.data;
-          console.log("\n📊 Validation Result (Raw data length):", errorData.length);
+          // Decode the validation result manually from the error data
+          // error.data format: 0xe0cff05f + encoded data
+          const dataWithoutSelector = "0x" + error.data.slice(10);
           
-          // ValidationResult structure for v0.6:
-          // struct ReturnInfo {
-          //   uint256 preOpGas;
-          //   uint256 prefund;
-          //   bool sigFailed;
-          //   uint48 validAfter;
-          //   uint48 validUntil;
-          //   bytes paymasterContext;
-          // }
+          const abiCoder = ethers.AbiCoder.defaultAbiCoder();
+          const decoded = abiCoder.decode(
+            [
+              "tuple(uint256 preOpGas, uint256 prefund, bool sigFailed, uint48 validAfter, uint48 validUntil, bytes paymasterContext)",
+              "tuple(uint256 stake, uint256 unstakeDelay)",
+              "tuple(uint256 stake, uint256 unstakeDelay)",
+              "tuple(uint256 stake, uint256 unstakeDelay)"
+            ],
+            dataWithoutSelector
+          );
           
-          // Try to extract sigFailed (it's at a specific offset)
-          // Skip function selector (4 bytes = 8 hex chars + 0x)
-          const dataWithoutSelector = errorData.slice(10);
+          const [returnInfo, senderInfo, factoryInfo, paymasterInfo] = decoded;
           
-          // The structure has offsets, sigFailed is a bool
-          // It's in the first tuple at position 2 (after two uint256s)
-          // Offset calculation: 32 bytes * 2 (two uint256s) = 64 bytes = 128 hex chars
-          const sigFailedOffset = 128;
-          const sigFailedHex = dataWithoutSelector.slice(sigFailedOffset, sigFailedOffset + 64);
-          const sigFailed = BigInt("0x" + sigFailedHex) !== 0n;
+          console.log("\n📊 Validation Result:");
+          console.log("   Return Info:");
+          console.log("     preOpGas:", returnInfo[0].toString());
+          console.log("     prefund:", ethers.formatEther(returnInfo[1]), "ETH");
+          console.log("     sigFailed:", returnInfo[2]);
+          console.log("     validAfter:", returnInfo[3].toString());
+          console.log("     validUntil:", returnInfo[4].toString());
           
-          console.log("   sigFailed:", sigFailed ? "❌ TRUE (FAILED)" : "✅ FALSE (PASSED)");
+          console.log("   Sender Info:");
+          console.log("     stake:", ethers.formatEther(senderInfo[0]), "ETH");
+          console.log("     unstakeDelay:", senderInfo[1].toString());
           
-          if (sigFailed) {
-            console.log("\n❌ SIGNATURE VALIDATION FAILED ON-CHAIN!");
-            console.log("   This means either:");
-            console.log("   1. User signature is invalid");
-            console.log("   2. Paymaster signature is invalid");
+          console.log("   Factory Info:");
+          console.log("     stake:", ethers.formatEther(factoryInfo[0]), "ETH");
+          console.log("     unstakeDelay:", factoryInfo[1].toString());
+          
+          console.log("   Paymaster Info:");
+          console.log("     stake:", ethers.formatEther(paymasterInfo[0]), "ETH");
+          console.log("     unstakeDelay:", paymasterInfo[1].toString());
+          
+          // Check for signature failure
+          if (returnInfo[2]) {
+            console.log("\n❌ SIGNATURE FAILED!");
             throw new Error("Signature validation failed (sigFailed = true)");
           }
           
-          console.log("\n✅ On-chain validation passed (sigFailed = false)");
+          console.log("\n✅ All validations passed!");
           return true;
-        } catch (decodeError: any) {
-          console.log("⚠️ Could not fully decode validation result:", decodeError.message);
-          console.log("   Assuming validation passed since no error was thrown");
-          return true;
+        } catch (decodeError) {
+          console.log("⚠️ Could not decode validation result");
         }
       } else {
         // Real error

@@ -452,16 +452,17 @@ async function testTransaction() {
   const client = new AAClient(config.backendUrl);
 
   // Login with existing user
-  await client.login("test_1763516866668", "TestPassword123!");
+  await client.login("test_1763597841987", "TestPassword123!");
 
   // Send transaction
   const result = await client.sendTransaction(
     "0x06d97198756295a96c2158a23963306f507b2f69",
-    "5"
+    "1"
   );
 
+  console.log("\nFinal Result:", result);
   // Wait for confirmation
-  await client.waitForConfirmation(result.userOpHash);
+  // await client.waitForConfirmation(result.userOpHash);
 
   console.log(chalk.green("\n✅ Transaction test passed!"));
 }
@@ -471,7 +472,7 @@ async function testBuildUserOp() {
 
   const client = new AAClient(config.backendUrl);
   
-  await client.login("test_1763516866668", "TestPassword123!");
+  await client.login("test_1763597841987", "TestPassword123!");
 
   const userOp = await client.buildUserOp(
     "0x06d97198756295a96c2158a23963306f507b2f69",

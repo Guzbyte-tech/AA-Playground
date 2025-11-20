@@ -15,6 +15,37 @@ export interface UserOperationV6 {
     signature: string;
 }
 
+export interface requestAlchemyUserOperationV6 {
+    sender: string;
+    nonce: string;
+    initCode: string;
+    callData: string;
+    callGasLimit: string;
+    verificationGasLimit: string;
+    preVerificationGas: string;
+    maxFeePerGas: string;
+    maxPriorityFeePerGas: string;
+}
+
+export interface EstimateGasUserOperationV6 {
+    sender: string;
+    nonce: string;
+    initCode: string;
+    callData: string;
+    paymasterAndData?: string;
+    signature: string;
+}
+
+export interface PayMasterUserOperationV6 {
+    sender: string;
+    nonce: string;
+    callGasLimit: string;
+    verificationGasLimit: string;
+    preVerificationGas: string;
+    maxFeePerGas: string;
+    maxPriorityFeePerGas: string;
+}
+
 export interface UserOperation {
     sender: string;
     nonce: string;
@@ -54,11 +85,13 @@ export class BundlerService {
     private bundlerUrl: string;
     private bundlerType: string;
     private entryPoint: string;
+    private policyId: string;
 
     constructor() {
         this.bundlerUrl = process.env.BUNDLER_URL!;
         this.bundlerType = process.env.BUNDLER_TYPE || 'alchemy';
         this.entryPoint = process.env.ENTRYPOINT_ADDRESS!;
+        this.policyId = process.env.ALCHEMY_POLICY_ID!;
     }
 
     /**
@@ -152,11 +185,15 @@ export class BundlerService {
 
         while (Date.now() - startTime < timeout) {
             const receipt = await this.getUserOperationReceipt(userOpHash);
-
+            console.log("    Checking receipt...");
+            console.log("   Receipt:", receipt);
             if (receipt) {
                 console.log('✅ UserOp confirmed!');
-                console.log('   TxHash:', receipt.transactionHash);
-                console.log('   Block:', receipt.blockNumber);
+                const txHash = receipt.receipt?.transactionHash;
+                const block = receipt.receipt?.blockNumber;
+
+                console.log('   TxHash:', txHash);
+                console.log('   Block:', block);
                 return receipt;
             }
 
@@ -200,6 +237,78 @@ export class BundlerService {
             throw error;
         }
     }
+
+    /**
+     * 
+     * Request Gas And PaymasterAndData
+     * 
+     */
+    async requestGasAndPaymasterAndData(userOp: any): Promise<{
+        paymasterAndData: string;
+        callGasLimit: string;
+        verificationGasLimit: string;
+        maxPriorityFeePerGas: string;
+        maxFeePerGas: string;
+        preVerificationGas: string;
+    }> {
+        try {
+            const response = await axios.post(
+                this.bundlerUrl,
+                {
+                    jsonrpc: "2.0",
+                    method: "alchemy_requestGasAndPaymasterAndData",
+                    params: [
+                        {
+                            webhookData: "example webhook data",
+                            policyId: this.policyId,             // you should pass this from env
+                            entryPoint: this.entryPoint,         // same entrypoint you use
+                            dummySignature:
+                                "0xfffffffffffffffffffffffffffffff0000000000000000000000000000000007aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1c",
+                            userOperation: {
+                                sender: userOp.sender,
+                                nonce: userOp.nonce,
+                                initCode: userOp.initCode,
+                                callData: userOp.callData,
+                                callGasLimit: userOp.callGasLimit,
+                                verificationGasLimit: userOp.verificationGasLimit,
+                                preVerificationGas: userOp.preVerificationGas,
+                                maxFeePerGas: userOp.maxFeePerGas,
+                                maxPriorityFeePerGas: userOp.maxPriorityFeePerGas,
+                            }
+                        }
+                    ],
+                    id: 1
+                },
+                {
+                    headers: {
+                        "Content-Type": "application/json"
+                    }
+                }
+            );
+
+            if ((response.data as any).error) {
+                console.error(
+                    "Full Alchemy Paymaster Error:",
+                    JSON.stringify((response.data as any).error, null, 2)
+                );
+
+                throw new Error(
+                    `alchemy_requestGasAndPaymasterAndData failed: ${(response.data as any).error.message}`
+                );
+            }
+
+            return (response.data as any).result; 
+
+        } catch (error: any) {
+            if (error.response?.data) {
+                console.error("Response error:", JSON.stringify(error.response.data, null, 2));
+            }
+            console.error("Full error object:", error);
+            throw error;
+        }
+    }
+
+
 
     async estimateUserOperationGas(userOp: any): Promise<{
         preVerificationGas: string;
@@ -329,43 +438,43 @@ export class BundlerService {
     async getGasFees(): Promise<{
     maxFeePerGas: string;
     maxPriorityFeePerGas: string;
-}> {
-    const provider = new ethers.JsonRpcProvider(process.env.SEPOLIA_RPC_URL);
-    const feeData = await provider.getFeeData();
+    }> {
+        const provider = new ethers.JsonRpcProvider(process.env.SEPOLIA_RPC_URL);
+        const feeData = await provider.getFeeData();
 
-    // Get current network fees
-    const currentMaxFeePerGas = feeData.maxFeePerGas || 0n;
-    const currentMaxPriorityFee = feeData.maxPriorityFeePerGas || 0n;
+        // Get current network fees
+        const currentMaxFeePerGas = feeData.maxFeePerGas || 0n;
+        const currentMaxPriorityFee = feeData.maxPriorityFeePerGas || 0n;
 
-    // IMPORTANT: Add buffer and ensure minimum for bundler
-    // Bundlers often require higher fees than the network minimum
-    const MIN_MAX_FEE_PER_GAS = 100_000_000_000n; // 100 gwei minimum
-    const MIN_PRIORITY_FEE = 1_000_000_000n;      // 1 gwei minimum
+        // IMPORTANT: Add buffer and ensure minimum for bundler
+        // Bundlers often require higher fees than the network minimum
+        const MIN_MAX_FEE_PER_GAS = 100_000_000_000n; // 100 gwei minimum
+        const MIN_PRIORITY_FEE = 1_000_000_000n;      // 1 gwei minimum
 
-    // Add 20% buffer to network fees
-    const bufferedMaxFee = (currentMaxFeePerGas * 120n) / 100n;
-    const bufferedPriorityFee = (currentMaxPriorityFee * 120n) / 100n;
+        // Add 20% buffer to network fees
+        const bufferedMaxFee = (currentMaxFeePerGas * 120n) / 100n;
+        const bufferedPriorityFee = (currentMaxPriorityFee * 120n) / 100n;
 
-    // Use the higher of: (buffered network fee) or (minimum required)
-    const finalMaxFeePerGas = bufferedMaxFee > MIN_MAX_FEE_PER_GAS 
-        ? bufferedMaxFee 
-        : MIN_MAX_FEE_PER_GAS;
-    
-    const finalMaxPriorityFee = bufferedPriorityFee > MIN_PRIORITY_FEE
-        ? bufferedPriorityFee
-        : MIN_PRIORITY_FEE;
+        // Use the higher of: (buffered network fee) or (minimum required)
+        const finalMaxFeePerGas = bufferedMaxFee > MIN_MAX_FEE_PER_GAS 
+            ? bufferedMaxFee 
+            : MIN_MAX_FEE_PER_GAS;
+        
+        const finalMaxPriorityFee = bufferedPriorityFee > MIN_PRIORITY_FEE
+            ? bufferedPriorityFee
+            : MIN_PRIORITY_FEE;
 
-    console.log("Gas Fee Calculation:");
-    console.log("  Network maxFeePerGas:", ethers.formatUnits(currentMaxFeePerGas, "gwei"), "gwei");
-    console.log("  Network maxPriorityFee:", ethers.formatUnits(currentMaxPriorityFee, "gwei"), "gwei");
-    console.log("  Final maxFeePerGas:", ethers.formatUnits(finalMaxFeePerGas, "gwei"), "gwei");
-    console.log("  Final maxPriorityFee:", ethers.formatUnits(finalMaxPriorityFee, "gwei"), "gwei");
+        console.log("Gas Fee Calculation:");
+        console.log("  Network maxFeePerGas:", ethers.formatUnits(currentMaxFeePerGas, "gwei"), "gwei");
+        console.log("  Network maxPriorityFee:", ethers.formatUnits(currentMaxPriorityFee, "gwei"), "gwei");
+        console.log("  Final maxFeePerGas:", ethers.formatUnits(finalMaxFeePerGas, "gwei"), "gwei");
+        console.log("  Final maxPriorityFee:", ethers.formatUnits(finalMaxPriorityFee, "gwei"), "gwei");
 
-    return {
-        maxFeePerGas: ethers.toBeHex(finalMaxFeePerGas),
-        maxPriorityFeePerGas: ethers.toBeHex(finalMaxPriorityFee)
-    };
-}
+        return {
+            maxFeePerGas: ethers.toBeHex(finalMaxFeePerGas),
+            maxPriorityFeePerGas: ethers.toBeHex(finalMaxPriorityFee)
+        };
+    }
 
 
   /**

@@ -15,7 +15,7 @@ const router = Router();
 
 router.post("/build", authMiddleware, transactionController.buildUserOp);
 router.post("/submit", authMiddleware, transactionController.submitTransaction);
-router.post("/status", authMiddleware, transactionController.getTransactionStatus);
+router.get("/status/:userOpHash", authMiddleware, transactionController.getTransactionStatus);
 
 
 export default router;
