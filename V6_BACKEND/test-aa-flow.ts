@@ -457,7 +457,7 @@ async function testTransaction() {
   // Send transaction
   const result = await client.sendTransaction(
     "0x06d97198756295a96c2158a23963306f507b2f69",
-    "1"
+    "5"
   );
 
   console.log("\nFinal Result:", result);

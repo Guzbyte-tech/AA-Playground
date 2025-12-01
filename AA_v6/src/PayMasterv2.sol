@@ -6,8 +6,6 @@ import { IEntryPoint } from "../lib/account-abstraction/contracts/interfaces/IEn
 import { UserOperation } from "../lib/account-abstraction/contracts/interfaces/UserOperation.sol";
 import { IPaymaster } from "../lib/account-abstraction/contracts/interfaces/IPaymaster.sol";
 
-
-
 contract PayMasterV2 is IPaymaster {
     using ECDSA for bytes32;
 

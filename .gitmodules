@@ -4,3 +4,12 @@
 [submodule "smart-contract/lib/openzeppelin-contracts"]
 	path = smart-contract/lib/openzeppelin-contracts
 	url = https://github.com/openzeppelin/openzeppelin-contracts
+[submodule "AA_v7/lib/forge-std"]
+	path = AA_v7/lib/forge-std
+	url = https://github.com/foundry-rs/forge-std
+[submodule "AA_v7/lib/account-abstraction"]
+	path = AA_v7/lib/account-abstraction
+	url = https://github.com/eth-infinitism/account-abstraction
+[submodule "AA_v7/lib/openzeppelin-contracts"]
+	path = AA_v7/lib/openzeppelin-contracts
+	url = https://github.com/openzeppelin/openzeppelin-contracts
