@@ -1,0 +1,13 @@
+.env
+node_modules/
+package-lock.json
+dist/
+logs/
+
+coverage/
+
+newrelic_agent.log
+logs/newrelic*
+
+./dist
+./keys

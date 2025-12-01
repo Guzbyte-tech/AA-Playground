@@ -1,0 +1,18 @@
+# Dockerfile.dev
+FROM node:20-alpine
+
+WORKDIR /app
+
+# Install dependencies (cached)
+COPY package*.json ./
+RUN npm ci
+
+# Install tsx globally (fastest TypeScript runner with hot-reload)
+RUN npm install -g tsx
+
+COPY . .
+
+EXPOSE 4000
+
+# This will be overridden by docker-compose command, but good to have
+CMD ["npm", "run", "dev"]
