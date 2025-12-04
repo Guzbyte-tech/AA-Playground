@@ -419,22 +419,6 @@ class AAClient {
     return response.data;
   }
 
-  /**
-   * Calculate UserOpHash from EntryPoint contract (v0.7)
-   */
-  // private async calculateUserOpHashFromContract(
-  //   userOp: UserOperationV7
-  // ): Promise<string> {
-  //   const entryPoint = new ethers.Contract(
-  //     config.entryPoint,
-  //     EntryPointV07ABI,
-  //     config.provider
-  //   );
-
-  //   const userOpHash = await entryPoint.getUserOpHash(userOp);
-  //   return userOpHash;
-  // }
-
   private async calculateUserOpHashFromContract(
     userOp: UserOperationV7Unpacked
   ): Promise<string> {
